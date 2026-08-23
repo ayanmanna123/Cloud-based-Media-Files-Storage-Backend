@@ -25,11 +25,17 @@ app.use('/api', routes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  
   const statusCode = err.statusCode || 500;
   const code = err.code || 'INTERNAL_SERVER_ERROR';
   const message = err.message || 'Something went wrong';
+
+  // Only log stack traces for actual server errors (500s), not client errors (401s, 400s)
+  if (statusCode >= 500) {
+    console.error(err.stack);
+  } else if (process.env.NODE_ENV !== 'production') {
+    // Optionally log a short message for 4xx errors in development
+    console.log(`[${statusCode}] ${message}`);
+  }
 
   res.status(statusCode).json({
     error: {
