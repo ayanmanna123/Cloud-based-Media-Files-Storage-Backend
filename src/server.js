@@ -3,12 +3,22 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 
 const { initCronJobs } = require('./utils/cronJobs');
 const routes = require('./routes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Rate limiting middleware
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  limit: 200, // Limit each IP to 200 requests per `window` (here, per 15 minutes).
+  standardHeaders: 'draft-7', // draft-6: `RateLimit-*` headers; draft-7: combined `RateLimit` header
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers.
+  message: { error: { code: 'TOO_MANY_REQUESTS', message: 'Too many requests, please try again later.' } }
+});
 
 // Initialize Cron Jobs
 initCronJobs();
@@ -17,6 +27,7 @@ initCronJobs();
 app.use(helmet({
   crossOriginOpenerPolicy: false,
 }));
+app.use(limiter); // Apply rate limiting to all requests
 app.use(cors({ origin: true, credentials: true })); // Enable credentials for cookies
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
