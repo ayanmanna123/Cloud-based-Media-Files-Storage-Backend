@@ -8,6 +8,7 @@ const router = express.Router();
 router.use(protect);
 
 router.post('/', foldersController.createFolder);
+router.get('/root', foldersController.getRoot);
 router.get('/:id', foldersController.getFolder);
 router.patch('/:id', foldersController.updateFolder);
 router.delete('/:id', foldersController.deleteFolder);

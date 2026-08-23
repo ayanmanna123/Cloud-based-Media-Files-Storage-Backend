@@ -32,6 +32,37 @@ exports.createFolder = async (req, res, next) => {
   }
 };
 
+exports.getRoot = async (req, res, next) => {
+  try {
+    // Get top-level folders (parent_id is null)
+    const { data: folders } = await supabase
+      .from('folders')
+      .select('*')
+      .is('parent_id', null)
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false);
+
+    // Get top-level files (folder_id is null)
+    const { data: files } = await supabase
+      .from('files')
+      .select('*')
+      .is('folder_id', null)
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false);
+
+    res.status(200).json({
+      folder: { name: 'My Drive', id: null },
+      children: {
+        folders: keysToCamel(folders || []),
+        files: keysToCamel(files || []),
+      },
+      path: []
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getFolder = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -65,13 +96,38 @@ exports.getFolder = async (req, res, next) => {
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
 
+    // 4. Build path recursively (or iteratively)
+    let path = [];
+    let currentParentId = folder.parent_id;
+    
+    // Safety limit to prevent infinite loops in corrupted data
+    let depth = 0;
+    while (currentParentId && depth < 20) {
+      const { data: parentFolder } = await supabase
+        .from('folders')
+        .select('id, name, parent_id')
+        .eq('id', currentParentId)
+        .single();
+        
+      if (parentFolder) {
+        path.unshift({ id: parentFolder.id, name: parentFolder.name });
+        currentParentId = parentFolder.parent_id;
+      } else {
+        break;
+      }
+      depth++;
+    }
+    
+    // Add the current folder as the last item in the path
+    path.push({ id: folder.id, name: folder.name });
+
     res.status(200).json({
       folder: keysToCamel(folder),
       children: {
         folders: keysToCamel(folders || []),
         files: keysToCamel(files || []),
       },
-      path: [] // Path logic would require a recursive CTE query, skipped for brevity in placeholder
+      path: keysToCamel(path)
     });
   } catch (error) {
     next(error);
