@@ -17,33 +17,61 @@ exports.initFileUpload = async (req, res, next) => {
     const sanitizedName = name.replace(/[^a-zA-Z0-9.\-]/g, '_');
     const storageKey = `user_${req.user.id}/${uniqueId}_${sanitizedName}`;
 
-    // 1. Create DB entry for the file (status can be considered 'pending' until complete is called, 
-    // though we don't have a status column, we can just insert it)
-    const { data: file, error } = await supabase
+    // Check for existing file with same name in same folder
+    let query = supabase
       .from('files')
-      .insert([
-        {
-          name,
-          mime_type: mimeType,
-          size_bytes: sizeBytes,
-          storage_key: storageKey,
-          owner_id: req.user.id,
-          folder_id: folderId || null,
-        },
-      ])
-      .select()
-      .single();
+      .select('id, name')
+      .eq('owner_id', req.user.id)
+      .eq('name', name)
+      .eq('is_deleted', false);
+      
+    if (folderId) {
+      query = query.eq('folder_id', folderId);
+    } else {
+      query = query.is('folder_id', null);
+    }
 
-    if (error) {
-      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    const { data: existingFiles, error: queryError } = await query.limit(1);
+    
+    if (queryError) {
+      console.error("Error querying existing files:", queryError);
+    }
+    
+    const existingFile = existingFiles && existingFiles.length > 0 ? existingFiles[0] : null;
+    
+    let fileId;
+    let isNewVersion = false;
+
+    if (existingFile) {
+        fileId = existingFile.id;
+        isNewVersion = true;
+    } else {
+        const { data: newFile, error } = await supabase
+          .from('files')
+          .insert([{
+            name,
+            mime_type: mimeType,
+            size_bytes: sizeBytes,
+            storage_key: storageKey,
+            owner_id: req.user.id,
+            folder_id: folderId || null,
+          }])
+          .select()
+          .single();
+
+        if (error) {
+          throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+        }
+        fileId = newFile.id;
     }
 
     // 2. Generate ImageKit Auth Params for client-side upload
     const authParams = imagekit.getAuthenticationParameters();
 
     res.status(200).json({
-      fileId: file.id,
+      fileId: fileId,
       storageKey: storageKey,
+      isNewVersion,
       upload: {
         method: 'imagekit',
         auth: authParams, // { token, expire, signature }
@@ -56,9 +84,7 @@ exports.initFileUpload = async (req, res, next) => {
 
 exports.completeFileUpload = async (req, res, next) => {
   try {
-    const { fileId } = req.body;
-    // Client can pass ImageKit fileId or tags if needed, but mainly we just mark the DB as complete 
-    // by creating the first file_version
+    const { fileId, isNewVersion, storageKey, sizeBytes } = req.body;
     
     const { data: file, error: fileError } = await supabase
       .from('files')
@@ -71,31 +97,64 @@ exports.completeFileUpload = async (req, res, next) => {
       throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
-    // Create initial file version
-    const { data: version, error: versionError } = await supabase
-      .from('file_versions')
-      .insert([
-        {
+    if (isNewVersion) {
+      // Get max version number
+      const { data: versions } = await supabase
+        .from('file_versions')
+        .select('version_number')
+        .eq('file_id', file.id)
+        .order('version_number', { ascending: false })
+        .limit(1);
+        
+      const nextVersion = (versions && versions.length > 0) ? versions[0].version_number + 1 : 2;
+
+      const { data: newVersion, error: versionError } = await supabase
+        .from('file_versions')
+        .insert([{
           file_id: file.id,
-          version_number: 1,
-          storage_key: file.storage_key,
-          size_bytes: file.size_bytes,
-        }
-      ])
-      .select('id')
-      .single();
+          version_number: nextVersion,
+          storage_key: storageKey,
+          size_bytes: sizeBytes,
+        }])
+        .select('id')
+        .single();
 
-    if (versionError) {
-      throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      if (versionError) {
+        throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+
+      await supabase
+        .from('files')
+        .update({ 
+          version_id: newVersion.id,
+          storage_key: storageKey,
+          size_bytes: sizeBytes,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', file.id);
+
+    } else {
+      // Create initial file version
+      const { data: version, error: versionError } = await supabase
+        .from('file_versions')
+        .insert([{
+            file_id: file.id,
+            version_number: 1,
+            storage_key: file.storage_key,
+            size_bytes: file.size_bytes,
+        }])
+        .select('id')
+        .single();
+
+      if (versionError) {
+        throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+
+      await supabase
+        .from('files')
+        .update({ version_id: version.id })
+        .eq('id', file.id);
     }
-
-    // Update file with version_id
-    await supabase
-      .from('files')
-      .update({ version_id: version.id })
-      .eq('id', file.id);
-
-    // Optional: trigger background preview job here
 
     res.status(200).json({ status: 'success', message: 'Upload completed' });
   } catch (error) {
@@ -185,7 +244,93 @@ exports.deleteFile = async (req, res, next) => {
 
     // Log delete activity here...
 
-    res.status(200).json({ status: 'success', message: 'File soft deleted' });
+    res.status(200).json({ status: 'success', message: 'File deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getFileVersions = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Verify ownership
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('id')
+      .eq('id', id)
+      .eq('owner_id', req.user.id)
+      .single();
+
+    if (fileError || !file) {
+      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    const { data: versions, error: versionError } = await supabase
+      .from('file_versions')
+      .select('*')
+      .eq('file_id', id)
+      .order('version_number', { ascending: false });
+
+    if (versionError) {
+      throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json(keysToCamel(versions));
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.restoreFileVersion = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { versionId } = req.body;
+
+    if (!versionId) {
+      throw new AppError('Version ID is required', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    // Verify ownership
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('id')
+      .eq('id', id)
+      .eq('owner_id', req.user.id)
+      .single();
+
+    if (fileError || !file) {
+      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    // Get the version details
+    const { data: version, error: versionError } = await supabase
+      .from('file_versions')
+      .select('*')
+      .eq('id', versionId)
+      .eq('file_id', id)
+      .single();
+
+    if (versionError || !version) {
+      throw new AppError('Version not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    // Update the pointer
+    const { error: updateError } = await supabase
+      .from('files')
+      .update({
+        version_id: version.id,
+        storage_key: version.storage_key,
+        size_bytes: version.size_bytes,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id);
+
+    if (updateError) {
+      throw new AppError(updateError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json({ status: 'success', message: 'Version restored successfully' });
   } catch (error) {
     next(error);
   }

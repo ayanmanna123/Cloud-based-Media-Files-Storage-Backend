@@ -14,4 +14,8 @@ router.get('/:id', filesController.getFile);
 router.patch('/:id', filesController.updateFile);
 router.delete('/:id', filesController.deleteFile);
 
+// Version history routes
+router.get('/:id/versions', filesController.getFileVersions);
+router.post('/:id/versions/restore', filesController.restoreFileVersion);
+
 module.exports = router;
