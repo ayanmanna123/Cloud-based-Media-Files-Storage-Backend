@@ -21,7 +21,7 @@ const createSendToken = (user, statusCode, res) => {
     expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   };
 
   res.cookie('jwt', token, cookieOptions);
@@ -195,7 +195,8 @@ exports.googleLogin = async (req, res, next) => {
     res.cookie('jwt', token, {
       expires: new Date(Date.now() + expiresDays * 24 * 60 * 60 * 1000),
       httpOnly: true,
-      // secure: process.env.NODE_ENV === 'production'
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     });
 
     res.status(200).json({
