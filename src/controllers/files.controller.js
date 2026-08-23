@@ -190,3 +190,23 @@ exports.deleteFile = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.getRecentFiles = async (req, res, next) => {
+  try {
+    const { data: files, error } = await supabase
+      .from('files')
+      .select('*')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .order('updated_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json(keysToCamel(files));
+  } catch (error) {
+    next(error);
+  }
+};
