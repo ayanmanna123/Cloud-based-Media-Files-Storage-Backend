@@ -343,8 +343,26 @@ exports.resetPassword = async (req, res, next) => {
 exports.getMe = async (req, res, next) => {
   try {
     // User is already attached to req by auth.middleware
+    // Calculate storage used
+    const { data: files, error } = await supabase
+      .from('files')
+      .select('size_bytes')
+      .eq('owner_id', req.user.id);
+
+    let storageUsed = 0;
+    if (!error && files) {
+      storageUsed = files.reduce((acc, file) => acc + (file.size_bytes || 0), 0);
+    }
+
+    // Default storage limit: 100 GB
+    const storageLimit = 100 * 1024 * 1024 * 1024;
+
     res.status(200).json({
-      user: req.user,
+      user: {
+        ...req.user,
+        storageUsed,
+        storageLimit
+      },
     });
   } catch (error) {
     next(error);
