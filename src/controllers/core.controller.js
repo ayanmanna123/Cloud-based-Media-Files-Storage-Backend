@@ -127,3 +127,30 @@ exports.restoreTrash = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.hardDeleteTrash = async (req, res, next) => {
+  try {
+    const { type, id } = req.params;
+    
+    if (type !== 'file' && type !== 'folder') {
+      throw new AppError('Invalid resource type', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+    
+    const table = type === 'file' ? 'files' : 'folders';
+
+    const { error } = await supabase
+      .from(table)
+      .delete()
+      .eq('id', id)
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', true);
+
+    if (error) {
+      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json({ status: 'success', message: 'Resource permanently deleted' });
+  } catch (error) {
+    next(error);
+  }
+};

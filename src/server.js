@@ -3,10 +3,15 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
+
+const { initCronJobs } = require('./utils/cronJobs');
 const routes = require('./routes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Initialize Cron Jobs
+initCronJobs();
 
 // Global Middlewares
 app.use(helmet({

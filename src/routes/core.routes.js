@@ -13,5 +13,6 @@ router.delete('/stars', coreController.removeStar);
 
 router.get('/trash', coreController.getTrash);
 router.post('/trash/restore', coreController.restoreTrash);
+router.delete('/trash/:type/:id', coreController.hardDeleteTrash);
 
 module.exports = router;
