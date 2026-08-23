@@ -63,6 +63,25 @@ exports.getRoot = async (req, res, next) => {
   }
 };
 
+exports.getAllFolders = async (req, res, next) => {
+  try {
+    const { data: folders, error } = await supabase
+      .from('folders')
+      .select('id, name, parent_id')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .order('name');
+
+    if (error) {
+      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json(keysToCamel(folders || []));
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getFolder = async (req, res, next) => {
   try {
     const { id } = req.params;

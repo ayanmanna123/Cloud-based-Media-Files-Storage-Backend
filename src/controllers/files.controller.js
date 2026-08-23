@@ -12,9 +12,10 @@ exports.initFileUpload = async (req, res, next) => {
       throw new AppError('Missing required file metadata', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
-    // Generate a unique storage key
+    // Generate a unique storage key with strict sanitization (ImageKit replaces special chars with _)
     const uniqueId = crypto.randomUUID();
-    const storageKey = `user_${req.user.id}/${uniqueId}_${name.replace(/\s+/g, '_')}`;
+    const sanitizedName = name.replace(/[^a-zA-Z0-9.\-]/g, '_');
+    const storageKey = `user_${req.user.id}/${uniqueId}_${sanitizedName}`;
 
     // 1. Create DB entry for the file (status can be considered 'pending' until complete is called, 
     // though we don't have a status column, we can just insert it)
@@ -121,7 +122,7 @@ exports.getFile = async (req, res, next) => {
     // Generate signed URL via ImageKit if it's private, or just standard URL
     // Depending on ImageKit config, you can sign it
     const signedUrl = imagekit.url({
-      path: file.storage_key,
+      path: file.storage_key.startsWith('/') ? file.storage_key : '/' + file.storage_key,
       signed: true,
       expireSeconds: 3600, // 1 hour
     });
