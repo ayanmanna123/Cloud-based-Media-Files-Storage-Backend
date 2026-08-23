@@ -67,4 +67,27 @@ const sendPasswordResetEmail = async (email, resetToken) => {
   console.log("Password reset email sent: %s", info.messageId);
 };
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail };
+const sendShareEmail = async (email, sharerName, resourceName, role, message) => {
+  const mailTransporter = await createTransporter();
+  
+  const dashboardUrl = `http://localhost:5173/dashboard`;
+
+  const mailOptions = {
+    from: '"CloudBox Admin" <admin@cloudbox.local>',
+    to: email,
+    subject: `${sharerName} shared "${resourceName}" with you - CloudBox`,
+    text: `${sharerName} has shared a file/folder with you on CloudBox.\n\n${message ? `Message: "${message}"\n\n` : ''}Role: ${role}\n\nView it here: ${dashboardUrl}`,
+    html: `
+      <h2>${sharerName} shared a file with you</h2>
+      <p><strong>${sharerName}</strong> has given you access to <strong>${resourceName}</strong> as a <strong>${role}</strong>.</p>
+      ${message ? `<blockquote style="border-left: 4px solid #ccc; padding-left: 10px; color: #555;"><i>"${message}"</i></blockquote>` : ''}
+      <br />
+      <a href="${dashboardUrl}" target="_blank" style="padding: 10px 20px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 5px;">Open CloudBox</a>
+    `,
+  };
+
+  const info = await mailTransporter.sendMail(mailOptions);
+  console.log("Share notification email sent: %s", info.messageId);
+};
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendShareEmail };

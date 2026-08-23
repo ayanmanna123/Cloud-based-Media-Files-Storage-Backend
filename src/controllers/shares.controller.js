@@ -1,13 +1,36 @@
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const { sendShareEmail } = require('../utils/email');
 
 exports.createShare = async (req, res, next) => {
   try {
-    const { resourceType, resourceId, granteeUserId, role } = req.body;
+    const { resourceType, resourceId, email, role, message } = req.body;
 
-    if (!resourceType || !resourceId || !granteeUserId || !role) {
+    if (!resourceType || !resourceId || !email || !role) {
       throw new AppError('Missing required share parameters', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    // Lookup grantee user by email
+    const { data: granteeUser, error: userError } = await supabase
+      .from('users')
+      .select('id, name')
+      .eq('email', email)
+      .single();
+
+    if (userError || !granteeUser) {
+      throw new AppError('No user found with that email address', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    // Fetch the resource name and sharer name for the email
+    const { data: sharer } = await supabase.from('users').select('name').eq('id', req.user.id).single();
+    let resourceName = 'a file';
+    if (resourceType === 'folder') {
+      const { data: f } = await supabase.from('folders').select('name').eq('id', resourceId).single();
+      if (f) resourceName = f.name;
+    } else {
+      const { data: f } = await supabase.from('files').select('name').eq('id', resourceId).single();
+      if (f) resourceName = f.name;
     }
 
     // Insert share
@@ -17,12 +40,12 @@ exports.createShare = async (req, res, next) => {
         {
           resource_type: resourceType,
           resource_id: resourceId,
-          grantee_user_id: granteeUserId,
+          grantee_user_id: granteeUser.id,
           role,
           created_by: req.user.id,
         },
       ])
-      .select()
+      .select('*, grantee:users!grantee_user_id(id, email, name)')
       .single();
 
     if (error) {
@@ -32,7 +55,41 @@ exports.createShare = async (req, res, next) => {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
+    // Send email notification (non-blocking)
+    sendShareEmail(email, sharer?.name || 'Someone', resourceName, role, message).catch(console.error);
+
     res.status(201).json(keysToCamel(data));
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getSharedWithMe = async (req, res, next) => {
+  try {
+    const { data: shares, error } = await supabase
+      .from('shares')
+      .select('resource_type, resource_id, role, created_by:users!shares_created_by_fkey(id, name, email)')
+      .eq('grantee_user_id', req.user.id);
+    
+    if (error) throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+
+    const folderIds = shares.filter(s => s.resource_type === 'folder').map(s => s.resource_id);
+    const fileIds = shares.filter(s => s.resource_type === 'file').map(s => s.resource_id);
+
+    let folders = [];
+    let files = [];
+
+    if (folderIds.length > 0) {
+      const { data: f } = await supabase.from('folders').select('*').in('id', folderIds);
+      folders = f || [];
+    }
+    
+    if (fileIds.length > 0) {
+      const { data: f } = await supabase.from('files').select('*').in('id', fileIds);
+      files = f || [];
+    }
+
+    res.status(200).json(keysToCamel({ folders, files }));
   } catch (error) {
     next(error);
   }
@@ -44,7 +101,7 @@ exports.getShares = async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('shares')
-      .select('*, grantee:users(id, email, name)')
+      .select('*, grantee:users!grantee_user_id(id, email, name)')
       .eq('resource_type', resourceType)
       .eq('resource_id', resourceId);
 

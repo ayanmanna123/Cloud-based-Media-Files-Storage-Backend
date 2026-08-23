@@ -7,6 +7,7 @@ const router = express.Router();
 router.use(protect);
 
 router.post('/', sharesController.createShare);
+router.get('/me', sharesController.getSharedWithMe);
 router.get('/:resourceType/:resourceId', sharesController.getShares);
 router.delete('/:id', sharesController.deleteShare);
 

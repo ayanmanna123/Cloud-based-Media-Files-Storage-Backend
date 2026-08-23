@@ -9,7 +9,9 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Global Middlewares
-app.use(helmet());
+app.use(helmet({
+  crossOriginOpenerPolicy: false,
+}));
 app.use(cors({ origin: true, credentials: true })); // Enable credentials for cookies
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
