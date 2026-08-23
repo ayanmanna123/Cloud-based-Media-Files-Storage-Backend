@@ -9,6 +9,7 @@ router.get('/:token', linksController.getLink);
 
 // Creating/Deleting links requires auth
 router.use(protect);
+router.get('/resource/:resourceType/:resourceId', linksController.getLinkForResource);
 router.post('/', linksController.createLinkShare);
 router.delete('/:id', linksController.deleteLinkShare);
 

@@ -47,6 +47,35 @@ exports.createLinkShare = async (req, res, next) => {
   }
 };
 
+exports.getLinkForResource = async (req, res, next) => {
+  try {
+    const { resourceType, resourceId } = req.params;
+
+    const { data, error } = await supabase
+      .from('link_shares')
+      .select('*')
+      .eq('resource_type', resourceType)
+      .eq('resource_id', resourceId)
+      // Only the person who created the link (or anyone with access? For now restrict to created_by)
+      // We can remove eq('created_by') if we want any editor to see it
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // Not found is fine
+        return res.status(200).json(null);
+      }
+      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    const responseData = keysToCamel(data);
+    responseData.passwordHash = undefined;
+    res.status(200).json(responseData);
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getLink = async (req, res, next) => {
   try {
     const { token } = req.params;
@@ -78,12 +107,21 @@ exports.getLink = async (req, res, next) => {
       }
     }
 
-    // Return the resource info (You might want to join or fetch the actual file/folder data here)
-    res.status(200).json({
-      resourceType: link.resource_type,
-      resourceId: link.resource_id,
-      // ... more resource data
-    });
+    // Fetch the actual resource data
+    let resourceData = null;
+    if (link.resource_type === 'file') {
+      const { data: file } = await supabase.from('files').select('*').eq('id', link.resource_id).single();
+      resourceData = file;
+    } else if (link.resource_type === 'folder') {
+      const { data: folder } = await supabase.from('folders').select('*').eq('id', link.resource_id).single();
+      resourceData = folder;
+    }
+
+    res.status(200).json(keysToCamel({
+      ...link,
+      password_hash: undefined, // ensure we don't leak hash
+      resource: resourceData
+    }));
   } catch (error) {
     next(error);
   }
