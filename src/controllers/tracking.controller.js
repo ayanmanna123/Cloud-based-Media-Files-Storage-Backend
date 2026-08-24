@@ -15,8 +15,7 @@ exports.trackOpen = async (req, res, next) => {
     const { error } = await supabase
       .from(table)
       .update({ last_opened_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('owner_id', req.user.id);
+      .eq('id', id);
 
     if (error) {
       // If column doesn't exist yet, we just ignore the error gracefully
@@ -36,12 +35,24 @@ exports.getRecentItems = async (req, res, next) => {
     // Helper to safely execute query
     const safeQuery = (query) => query.then(res => res).catch(() => ({ data: [] }));
 
+    // Get shared resources
+    const { data: shares } = await supabase
+      .from('shares')
+      .select('resource_type, resource_id')
+      .eq('grantee_user_id', userId);
+
+    const sharedFileIds = (shares || []).filter(s => s.resource_type === 'file').map(s => s.resource_id);
+    const sharedFolderIds = (shares || []).filter(s => s.resource_type === 'folder').map(s => s.resource_id);
+
+    const filesOr = sharedFileIds.length > 0 ? `owner_id.eq.${userId},id.in.(${sharedFileIds.join(',')})` : `owner_id.eq.${userId}`;
+    const foldersOr = sharedFolderIds.length > 0 ? `owner_id.eq.${userId},id.in.(${sharedFolderIds.join(',')})` : `owner_id.eq.${userId}`;
+
     // Fetch top 50 files by open date and top 50 files by update date
     const [filesOpen, filesUpdate, foldersOpen, foldersUpdate] = await Promise.all([
-      safeQuery(supabase.from('files').select('*').eq('owner_id', userId).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
-      safeQuery(supabase.from('files').select('*').eq('owner_id', userId).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50)),
-      safeQuery(supabase.from('folders').select('*, files(id, size_bytes)').eq('owner_id', userId).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
-      safeQuery(supabase.from('folders').select('*, files(id, size_bytes)').eq('owner_id', userId).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50))
+      safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
+      safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50)),
+      safeQuery(supabase.from('folders').select('*, files(id, size_bytes)').or(foldersOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
+      safeQuery(supabase.from('folders').select('*, files(id, size_bytes)').or(foldersOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50))
     ]);
 
     // Helper to extract data

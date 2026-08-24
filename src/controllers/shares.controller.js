@@ -83,7 +83,12 @@ exports.getSharedWithMe = async (req, res, next) => {
       const { data: f } = await supabase.from('folders').select('*').in('id', folderIds);
       folders = (f || []).map(folder => {
         const share = shares.find(s => s.resource_type === 'folder' && s.resource_id === folder.id);
-        return { ...folder, permission: share ? share.role : 'viewer' };
+        return { 
+          ...folder, 
+          permission: share ? share.role : 'viewer',
+          ownerName: share?.created_by?.name || 'Unknown',
+          ownerEmail: share?.created_by?.email || 'Unknown'
+        };
       });
     }
     
@@ -91,7 +96,12 @@ exports.getSharedWithMe = async (req, res, next) => {
       const { data: f } = await supabase.from('files').select('*').in('id', fileIds);
       files = (f || []).map(file => {
         const share = shares.find(s => s.resource_type === 'file' && s.resource_id === file.id);
-        return { ...file, permission: share ? share.role : 'viewer' };
+        return { 
+          ...file, 
+          permission: share ? share.role : 'viewer',
+          ownerName: share?.created_by?.name || 'Unknown',
+          ownerEmail: share?.created_by?.email || 'Unknown'
+        };
       });
     }
 
