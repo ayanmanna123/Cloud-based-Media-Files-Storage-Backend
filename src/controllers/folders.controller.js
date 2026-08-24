@@ -35,12 +35,18 @@ exports.createFolder = async (req, res, next) => {
 exports.getRoot = async (req, res, next) => {
   try {
     // Get top-level folders (parent_id is null)
-    const { data: folders } = await supabase
+    const { data: foldersData } = await supabase
       .from('folders')
-      .select('*')
+      .select('*, files(id, size_bytes)')
       .is('parent_id', null)
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
+
+    const folders = foldersData?.map(f => ({
+      ...f,
+      fileCount: f.files ? f.files.length : 0,
+      totalSize: f.files ? f.files.reduce((acc, file) => acc + (file.size_bytes || 0), 0) : 0
+    })) || [];
 
     // Get top-level files (folder_id is null)
     const { data: files } = await supabase
@@ -65,12 +71,18 @@ exports.getRoot = async (req, res, next) => {
 
 exports.getAllFolders = async (req, res, next) => {
   try {
-    const { data: folders, error } = await supabase
+    const { data: foldersData, error } = await supabase
       .from('folders')
-      .select('id, name, parent_id')
+      .select('id, name, parent_id, files(id, size_bytes)')
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .order('name');
+      
+    const folders = foldersData?.map(f => ({
+      ...f,
+      fileCount: f.files ? f.files.length : 0,
+      totalSize: f.files ? f.files.reduce((acc, file) => acc + (file.size_bytes || 0), 0) : 0
+    })) || [];
 
     if (error) {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
@@ -100,12 +112,18 @@ exports.getFolder = async (req, res, next) => {
     }
 
     // 2. Get children (subfolders)
-    const { data: folders } = await supabase
+    const { data: subfoldersData } = await supabase
       .from('folders')
-      .select('*')
+      .select('*, files(id, size_bytes)')
       .eq('parent_id', id)
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
+
+    const folders = subfoldersData?.map(f => ({
+      ...f,
+      fileCount: f.files ? f.files.length : 0,
+      totalSize: f.files ? f.files.reduce((acc, file) => acc + (file.size_bytes || 0), 0) : 0
+    })) || [];
 
     // 3. Get children (files)
     const { data: files } = await supabase
