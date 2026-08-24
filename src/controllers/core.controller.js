@@ -1,4 +1,5 @@
 const supabase = require('../config/supabase');
+const imagekit = require('../config/imagekit');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 
@@ -128,12 +129,91 @@ exports.restoreTrash = async (req, res, next) => {
   }
 };
 
+const getAllFilesForFolder = async (folderId, ownerId) => {
+  let filesToDelete = [];
+  let currentFolderIds = [folderId];
+  
+  while (currentFolderIds.length > 0) {
+    const { data: files } = await supabase
+      .from('files')
+      .select('id, storage_key')
+      .in('folder_id', currentFolderIds)
+      .eq('owner_id', ownerId);
+      
+    if (files && files.length > 0) {
+      filesToDelete = filesToDelete.concat(files);
+    }
+    
+    const { data: subfolders } = await supabase
+      .from('folders')
+      .select('id')
+      .in('parent_id', currentFolderIds)
+      .eq('owner_id', ownerId);
+      
+    if (subfolders && subfolders.length > 0) {
+      currentFolderIds = subfolders.map(f => f.id);
+    } else {
+      break;
+    }
+  }
+  
+  return filesToDelete;
+};
+
+const deleteFromImageKit = async (storageKey) => {
+  if (!storageKey) return;
+  
+  try {
+    const fileName = storageKey.split('/').pop();
+    const result = await new Promise((resolve) => {
+      imagekit.listFiles({ searchQuery: `name="${fileName}"` }, (err, res) => {
+        if (err) resolve(null);
+        else resolve(res);
+      });
+    });
+    
+    if (result && result.length > 0) {
+      // Find exact match just in case
+      const targetFile = result.find(f => f.filePath === `/${storageKey}`) || result[0];
+      await new Promise((resolve) => {
+        imagekit.deleteFile(targetFile.fileId, (err, res) => {
+          if (err) console.error("ImageKit delete error:", err);
+          resolve(res);
+        });
+      });
+    }
+  } catch (error) {
+    console.error("Error deleting from ImageKit:", error);
+  }
+};
+
 exports.hardDeleteTrash = async (req, res, next) => {
   try {
     const { type, id } = req.params;
     
     if (type !== 'file' && type !== 'folder') {
       throw new AppError('Invalid resource type', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    let filesToDelete = [];
+    
+    // Gather files to delete from ImageKit
+    if (type === 'file') {
+      const { data: file } = await supabase
+        .from('files')
+        .select('id, storage_key')
+        .eq('id', id)
+        .eq('owner_id', req.user.id)
+        .single();
+        
+      if (file) filesToDelete.push(file);
+    } else if (type === 'folder') {
+      filesToDelete = await getAllFilesForFolder(id, req.user.id);
+    }
+    
+    // Delete from ImageKit
+    for (const file of filesToDelete) {
+      await deleteFromImageKit(file.storage_key);
     }
     
     const table = type === 'file' ? 'files' : 'folders';
