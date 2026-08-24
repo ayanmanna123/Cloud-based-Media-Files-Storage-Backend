@@ -196,7 +196,6 @@ exports.hardDeleteTrash = async (req, res, next) => {
     }
 
     let filesToDelete = [];
-    
     // Gather files to delete from ImageKit
     if (type === 'file') {
       const { data: file } = await supabase
@@ -211,9 +210,28 @@ exports.hardDeleteTrash = async (req, res, next) => {
       filesToDelete = await getAllFilesForFolder(id, req.user.id);
     }
     
+    // Get all storage keys including older versions
+    const fileIds = filesToDelete.map(f => f.id);
+    let allStorageKeys = filesToDelete.map(f => f.storage_key).filter(k => k);
+    
+    if (fileIds.length > 0) {
+      const { data: versions } = await supabase
+        .from('file_versions')
+        .select('storage_key')
+        .in('file_id', fileIds);
+        
+      if (versions) {
+        versions.forEach(v => {
+          if (v.storage_key && !allStorageKeys.includes(v.storage_key)) {
+            allStorageKeys.push(v.storage_key);
+          }
+        });
+      }
+    }
+    
     // Delete from ImageKit
-    for (const file of filesToDelete) {
-      await deleteFromImageKit(file.storage_key);
+    for (const storageKey of allStorageKeys) {
+      await deleteFromImageKit(storageKey);
     }
     
     const table = type === 'file' ? 'files' : 'folders';
