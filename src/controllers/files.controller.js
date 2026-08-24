@@ -6,7 +6,7 @@ const crypto = require('crypto');
 
 exports.initFileUpload = async (req, res, next) => {
   try {
-    const { name, mimeType, sizeBytes, folderId } = req.body;
+    const { name, mimeType, sizeBytes, folderId, targetFileId } = req.body;
 
     if (!name || !mimeType || !sizeBytes) {
       throw new AppError('Missing required file metadata', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
@@ -15,35 +15,72 @@ exports.initFileUpload = async (req, res, next) => {
     // Generate a unique storage key with strict sanitization (ImageKit replaces special chars with _)
     const uniqueId = crypto.randomUUID();
     const sanitizedName = name.replace(/[^a-zA-Z0-9.\-]/g, '_');
-    const storageKey = `user_${req.user.id}/${uniqueId}_${sanitizedName}`;
-
-    // Check for existing file with same name in same folder
-    let query = supabase
-      .from('files')
-      .select('id, name')
-      .eq('owner_id', req.user.id)
-      .eq('name', name)
-      .eq('is_deleted', false);
+    
+    // Check for existing file
+    let existingFile = null;
+    
+    if (targetFileId) {
+      const { data: fileData, error: fileError } = await supabase
+        .from('files')
+        .select('id, name, owner_id')
+        .eq('id', targetFileId)
+        .eq('is_deleted', false)
+        .single();
+        
+      if (fileError) console.error("Error finding targetFileId:", fileError);
       
-    if (folderId) {
-      query = query.eq('folder_id', folderId);
+      if (fileData) {
+        if (fileData.owner_id === req.user.id) {
+          existingFile = fileData;
+        } else {
+          // Check for editor permission in shares
+          const { data: shareData } = await supabase
+            .from('shares')
+            .select('role')
+            .eq('resource_type', 'file')
+            .eq('resource_id', targetFileId)
+            .eq('grantee_user_id', req.user.id)
+            .eq('role', 'editor')
+            .single();
+            
+          if (shareData) {
+            existingFile = fileData;
+          } else {
+            // Might be a folder share granting permission, but for simplicity we rely on file share here. 
+            // Better to throw if unauthorized, but to match original logic, let it proceed to create new if not found.
+            throw new AppError('Unauthorized to edit this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+          }
+        }
+      }
     } else {
-      query = query.is('folder_id', null);
-    }
+      let query = supabase
+        .from('files')
+        .select('id, name, owner_id')
+        .eq('owner_id', req.user.id)
+        .eq('name', name)
+        .eq('is_deleted', false);
+        
+      if (folderId) {
+        query = query.eq('folder_id', folderId);
+      } else {
+        query = query.is('folder_id', null);
+      }
 
-    const { data: existingFiles, error: queryError } = await query.limit(1);
-    
-    if (queryError) {
-      console.error("Error querying existing files:", queryError);
+      const { data: existingFiles, error: queryError } = await query.limit(1);
+      if (queryError) console.error("Error querying existing files:", queryError);
+      existingFile = existingFiles && existingFiles.length > 0 ? existingFiles[0] : null;
     }
     
-    const existingFile = existingFiles && existingFiles.length > 0 ? existingFiles[0] : null;
+    // We use the owner's ID for the storage key to keep files grouped by original owner
+    const storageOwnerId = existingFile ? existingFile.owner_id : req.user.id;
+    const storageKey = `user_${storageOwnerId}/${uniqueId}_${sanitizedName}`;
     
+    const existingFileId = existingFile ? existingFile.id : null;
     let fileId;
     let isNewVersion = false;
 
-    if (existingFile) {
-        fileId = existingFile.id;
+    if (existingFileId) {
+        fileId = existingFileId;
         isNewVersion = true;
     } else {
         const { data: newFile, error } = await supabase
@@ -86,15 +123,31 @@ exports.completeFileUpload = async (req, res, next) => {
   try {
     const { fileId, isNewVersion, storageKey, sizeBytes } = req.body;
     
+    // Verify file exists and user has permission
     const { data: file, error: fileError } = await supabase
       .from('files')
       .select('*')
       .eq('id', fileId)
-      .eq('owner_id', req.user.id)
       .single();
 
     if (fileError || !file) {
       throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+    
+    // Check permission
+    if (file.owner_id !== req.user.id) {
+      const { data: shareData } = await supabase
+        .from('shares')
+        .select('role')
+        .eq('resource_type', 'file')
+        .eq('resource_id', fileId)
+        .eq('grantee_user_id', req.user.id)
+        .eq('role', 'editor')
+        .single();
+        
+      if (!shareData) {
+        throw new AppError('Unauthorized to update this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
     }
 
     if (isNewVersion) {
