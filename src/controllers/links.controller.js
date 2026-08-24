@@ -109,18 +109,27 @@ exports.getLink = async (req, res, next) => {
 
     // Fetch the actual resource data
     let resourceData = null;
+    let folderFiles = [];
+    
     if (link.resource_type === 'file') {
       const { data: file } = await supabase.from('files').select('*').eq('id', link.resource_id).single();
       resourceData = file;
     } else if (link.resource_type === 'folder') {
       const { data: folder } = await supabase.from('folders').select('*').eq('id', link.resource_id).single();
       resourceData = folder;
+      
+      // Fetch files inside the folder so the frontend can zip them
+      const { data: files } = await supabase.from('files').select('*').eq('folder_id', link.resource_id).eq('is_deleted', false);
+      if (files) {
+        folderFiles = files;
+      }
     }
 
     res.status(200).json(keysToCamel({
       ...link,
       password_hash: undefined, // ensure we don't leak hash
-      resource: resourceData
+      resource: resourceData,
+      files: folderFiles // return files so frontend can zip
     }));
   } catch (error) {
     next(error);
@@ -142,6 +151,93 @@ exports.deleteLinkShare = async (req, res, next) => {
     }
 
     res.status(200).json({ status: 'success', message: 'Link deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createBundleShare = async (req, res, next) => {
+  try {
+    const { fileIds, expiresAt, password } = req.body;
+
+    if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
+      throw new AppError('Missing fileIds', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    const token = crypto.randomBytes(16).toString('hex');
+    let passwordHash = null;
+
+    if (password) {
+      const salt = await bcrypt.genSalt(10);
+      passwordHash = await bcrypt.hash(password, salt);
+    }
+
+    const { data, error } = await supabase
+      .from('bundle_shares')
+      .insert([
+        {
+          file_ids: fileIds,
+          token,
+          password_hash: passwordHash,
+          expires_at: expiresAt || null,
+          created_by: req.user.id,
+        },
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    const responseData = keysToCamel(data);
+    responseData.passwordHash = undefined;
+    res.status(201).json(responseData);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getBundleShare = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.query;
+
+    const { data: bundle, error } = await supabase
+      .from('bundle_shares')
+      .select('*')
+      .eq('token', token)
+      .single();
+
+    if (error || !bundle) {
+      throw new AppError('Link not found or invalid', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    if (bundle.expires_at && new Date(bundle.expires_at) < new Date()) {
+      throw new AppError('This link has expired', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
+    if (bundle.password_hash) {
+      if (!password) {
+        throw new AppError('Password required to access this link', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
+      }
+      const isMatch = await bcrypt.compare(password, bundle.password_hash);
+      if (!isMatch) {
+        throw new AppError('Incorrect password', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
+      }
+    }
+
+    // Fetch all files in the bundle
+    const { data: files } = await supabase
+      .from('files')
+      .select('*')
+      .in('id', bundle.file_ids);
+
+    res.status(200).json(keysToCamel({
+      ...bundle,
+      password_hash: undefined,
+      files: files || []
+    }));
   } catch (error) {
     next(error);
   }
