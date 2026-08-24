@@ -28,7 +28,17 @@ app.use(helmet({
   crossOriginOpenerPolicy: false,
 }));
 app.use(limiter); // Apply rate limiting to all requests
-app.use(cors({ origin: true, credentials: true })); // Enable credentials for cookies
+const allowedOrigins = ['http://localhost:5173', 'https://cloud-based-media-files-storage-fro.vercel.app'];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+})); // Enable credentials for cookies
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
