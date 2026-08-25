@@ -1,4 +1,9 @@
 const nodemailer = require('nodemailer');
+const dns = require('dns');
+
+// Force Node.js to use IPv4 first. This prevents the ENETUNREACH error 
+// on platforms like Render where IPv6 routing for Gmail SMTP fails.
+dns.setDefaultResultOrder('ipv4first');
 
 const getFrontendUrl = () => {
   return process.env.NODE_ENV === 'production' 
@@ -18,10 +23,7 @@ const createTransporter = async () => {
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
-    },
-    // Force IPv4 to prevent ENETUNREACH errors in environments like Render
-    // that might have routing issues with IPv6 addresses for Gmail's SMTP
-    family: 4,
+    }
   });
 
   return transporter;
