@@ -16,15 +16,29 @@ let transporter;
 const createTransporter = async () => {
   if (transporter) return transporter;
 
-  transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || "smtp.ethereal.email",
-    port: process.env.EMAIL_PORT || 587,
-    secure: process.env.EMAIL_SECURE === 'true', 
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    }
-  });
+  const isGmail = process.env.EMAIL_HOST && process.env.EMAIL_HOST.includes('gmail');
+
+  if (isGmail) {
+    // Using the built-in 'gmail' service is much more reliable on platforms like Render.
+    // It automatically uses port 465 and secure: true, bypassing Port 587 timeouts.
+    transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      }
+    });
+  } else {
+    transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST || "smtp.ethereal.email",
+      port: process.env.EMAIL_PORT || 587,
+      secure: process.env.EMAIL_SECURE === 'true', 
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      }
+    });
+  }
 
   return transporter;
 };
