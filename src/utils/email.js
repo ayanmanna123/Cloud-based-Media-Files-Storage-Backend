@@ -19,6 +19,9 @@ const createTransporter = async () => {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
+    // Force IPv4 to prevent ENETUNREACH errors in environments like Render
+    // that might have routing issues with IPv6 addresses for Gmail's SMTP
+    family: 4,
   });
 
   return transporter;
