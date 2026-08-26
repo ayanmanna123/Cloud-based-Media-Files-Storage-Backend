@@ -13,5 +13,6 @@ router.get('/all', foldersController.getAllFolders);
 router.get('/:id', foldersController.getFolder);
 router.patch('/:id', foldersController.updateFolder);
 router.delete('/:id', foldersController.deleteFolder);
+router.post('/:id/copy', foldersController.copyFolder);
 
 module.exports = router;

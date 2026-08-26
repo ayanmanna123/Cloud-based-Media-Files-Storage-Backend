@@ -408,3 +408,94 @@ exports.getRecentFiles = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.copyFile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { folderId } = req.body; // target folder id
+
+    // Verify ownership and get file
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('*')
+      .eq('id', id)
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .single();
+
+    if (fileError || !file) {
+      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    // Check for name collision in target folder
+    let query = supabase
+      .from('files')
+      .select('name')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false);
+      
+    if (folderId) {
+      query = query.eq('folder_id', folderId);
+    } else {
+      query = query.is('folder_id', null);
+    }
+
+    const { data: existingFiles } = await query;
+    const existingNames = new Set((existingFiles || []).map(f => f.name));
+
+    let newName = file.name;
+    let counter = 1;
+    while (existingNames.has(newName)) {
+      const extIndex = file.name.lastIndexOf('.');
+      if (extIndex > -1) {
+        const namePart = file.name.substring(0, extIndex);
+        const extPart = file.name.substring(extIndex);
+        newName = `${namePart} (Copy ${counter})${extPart}`;
+      } else {
+        newName = `${file.name} (Copy ${counter})`;
+      }
+      counter++;
+    }
+
+    // Insert new file record pointing to the same storage_key
+    const { data: newFile, error: insertError } = await supabase
+      .from('files')
+      .insert([{
+        name: newName,
+        mime_type: file.mime_type,
+        size_bytes: file.size_bytes,
+        storage_key: file.storage_key,
+        owner_id: req.user.id,
+        folder_id: folderId || null,
+      }])
+      .select()
+      .single();
+
+    if (insertError) {
+      throw new AppError(insertError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    // Create initial file version for the copy
+    const { data: version, error: versionError } = await supabase
+      .from('file_versions')
+      .insert([{
+        file_id: newFile.id,
+        version_number: 1,
+        storage_key: file.storage_key,
+        size_bytes: file.size_bytes,
+      }])
+      .select('id')
+      .single();
+
+    if (!versionError && version) {
+      await supabase
+        .from('files')
+        .update({ version_id: version.id })
+        .eq('id', newFile.id);
+    }
+
+    res.status(200).json(keysToCamel(newFile));
+  } catch (error) {
+    next(error);
+  }
+};

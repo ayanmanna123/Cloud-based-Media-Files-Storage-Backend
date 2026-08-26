@@ -13,6 +13,7 @@ router.get('/recent', filesController.getRecentFiles);
 router.get('/:id', filesController.getFile);
 router.patch('/:id', filesController.updateFile);
 router.delete('/:id', filesController.deleteFile);
+router.post('/:id/copy', filesController.copyFile);
 
 // Version history routes
 router.get('/:id/versions', filesController.getFileVersions);
