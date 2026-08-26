@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/ayanmanna123/Cloud-based-Media-Files-Storage-Backend#readme",
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.3",
     "@supabase/supabase-js": "^2.112.3",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

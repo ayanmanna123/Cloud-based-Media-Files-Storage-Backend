@@ -5,6 +5,17 @@ const { OAuth2Client } = require('google-auth-library');
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/email');
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
+
+const rpName = 'Cloud Based Media Storage';
+// For local development
+const rpID = process.env.RP_ID || 'localhost';
+const origin = process.env.CLIENT_URL || `http://${rpID}:5173`;
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -392,6 +403,189 @@ exports.getMe = async (req, res, next) => {
         storageLimit
       },
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generatePasskeyRegistrationOptions = async (req, res, next) => {
+  try {
+    const user = req.user;
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userID: new Uint8Array(Buffer.from(user.id)),
+      userName: user.email,
+      attestationType: 'none',
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+        authenticatorAttachment: 'platform',
+      },
+    });
+
+    await supabase.from('users').update({ current_challenge: options.challenge }).eq('id', user.id);
+
+    res.status(200).json(options);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.verifyPasskeyRegistration = async (req, res, next) => {
+  try {
+    const user = req.user;
+    const body = req.body;
+
+    const { data: dbUser } = await supabase.from('users').select('current_challenge').eq('id', user.id).single();
+    if (!dbUser || !dbUser.current_challenge) {
+      throw new AppError('Registration challenge not found', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    const verification = await verifyRegistrationResponse({
+      response: body,
+      expectedChallenge: dbUser.current_challenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+    });
+
+    if (verification.verified && verification.registrationInfo) {
+      const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+
+      const { error } = await supabase.from('passkeys').insert([{
+        user_id: user.id,
+        webauthn_user_id: user.id,
+        credential_id: credential.id, // Base64URL string in v13
+        public_key: Buffer.from(credential.publicKey).toString('base64'),
+        counter: credential.counter,
+        device_type: credentialDeviceType,
+        backed_up: credentialBackedUp,
+        transports: credential.transports,
+      }]);
+
+      if (error) {
+        throw new AppError('Failed to save passkey', ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+
+      // Clear challenge
+      await supabase.from('users').update({ current_challenge: null }).eq('id', user.id);
+
+      res.status(200).json({ verified: true });
+    } else {
+      res.status(400).json({ verified: false, error: 'Passkey verification failed' });
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generatePasskeyLoginOptions = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    let user;
+    if (email) {
+      const { data } = await supabase.from('users').select('id, email').eq('email', email).single();
+      if (!data) {
+        throw new AppError('User not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+      }
+      user = data;
+    }
+
+    let allowCredentials = [];
+    if (user) {
+      const { data: passkeys } = await supabase.from('passkeys').select('credential_id, transports').eq('user_id', user.id);
+      if (passkeys && passkeys.length > 0) {
+        allowCredentials = passkeys.map(pk => ({
+          id: pk.credential_id,
+          transports: pk.transports || ['internal'],
+        }));
+      }
+    }
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials,
+      userVerification: 'preferred',
+    });
+
+    if (user) {
+      await supabase.from('users').update({ current_challenge: options.challenge }).eq('id', user.id);
+    } else {
+      // Store in cookie for identifier-first or auto-fill flows
+      res.cookie('passkey_challenge', options.challenge, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        maxAge: 5 * 60 * 1000,
+      });
+    }
+
+    res.status(200).json(options);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.verifyPasskeyLogin = async (req, res, next) => {
+  try {
+    const { email, response } = req.body;
+    let challenge = req.cookies.passkey_challenge;
+
+    let user;
+    if (email) {
+      const { data } = await supabase.from('users').select('*').eq('email', email).single();
+      if (!data) {
+        throw new AppError('User not found', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
+      }
+      user = data;
+      challenge = user.current_challenge;
+    }
+
+    if (!challenge) {
+      throw new AppError('Login challenge not found', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    // Find passkey by credential id
+    const { data: passkey } = await supabase.from('passkeys').select('*').eq('credential_id', response.id).single();
+
+    if (!passkey) {
+       throw new AppError('Passkey not found', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
+    }
+
+    // If email wasn't provided (e.g. conditional UI autofill), fetch user from passkey
+    if (!user) {
+       const { data } = await supabase.from('users').select('*').eq('id', passkey.user_id).single();
+       if (!data) throw new AppError('User not found', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
+       user = data;
+       // Challenge in cookie since we didn't know user earlier
+    }
+
+    const verification = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: challenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      credential: {
+        id: passkey.credential_id,
+        publicKey: new Uint8Array(Buffer.from(passkey.public_key, 'base64')),
+        counter: passkey.counter,
+        transports: passkey.transports,
+      }
+    });
+
+    if (verification.verified && verification.authenticationInfo) {
+      const { newCounter } = verification.authenticationInfo;
+
+      await supabase.from('passkeys').update({ counter: newCounter }).eq('id', passkey.id);
+      await supabase.from('users').update({ current_challenge: null }).eq('id', user.id);
+      res.clearCookie('passkey_challenge');
+
+      createSendToken(user, 200, res);
+    } else {
+      res.status(400).json({ verified: false, error: 'Passkey verification failed' });
+    }
   } catch (error) {
     next(error);
   }
