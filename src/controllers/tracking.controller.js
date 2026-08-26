@@ -51,8 +51,8 @@ exports.getRecentItems = async (req, res, next) => {
     const [filesOpen, filesUpdate, foldersOpen, foldersUpdate] = await Promise.all([
       safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
       safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50)),
-      safeQuery(supabase.from('folders').select('*, files(id, size_bytes)').or(foldersOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
-      safeQuery(supabase.from('folders').select('*, files(id, size_bytes)').or(foldersOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50))
+      safeQuery(supabase.from('folders').select('*, files(id, size_bytes, is_deleted)').or(foldersOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
+      safeQuery(supabase.from('folders').select('*, files(id, size_bytes, is_deleted)').or(foldersOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50))
     ]);
 
     // Helper to extract data
@@ -69,8 +69,9 @@ exports.getRecentItems = async (req, res, next) => {
     allFolders.forEach(f => {
       // Calculate fileCount and totalSize for folders
       if (f.files) {
-        f.fileCount = f.files.length;
-        f.totalSize = f.files.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
+        const activeFiles = f.files.filter(file => !file.is_deleted);
+        f.fileCount = activeFiles.length;
+        f.totalSize = activeFiles.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
         delete f.files;
       }
       uniqueFoldersMap.set(f.id, f);

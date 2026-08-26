@@ -37,16 +37,19 @@ exports.getRoot = async (req, res, next) => {
     // Get top-level folders (parent_id is null)
     const { data: foldersData } = await supabase
       .from('folders')
-      .select('*, files(id, size_bytes)')
+      .select('*, files(id, size_bytes, is_deleted)')
       .is('parent_id', null)
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
 
-    const folders = foldersData?.map(f => ({
-      ...f,
-      fileCount: f.files ? f.files.length : 0,
-      totalSize: f.files ? f.files.reduce((acc, file) => acc + (file.size_bytes || 0), 0) : 0
-    })) || [];
+    const folders = foldersData?.map(f => {
+      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
+      return {
+        ...f,
+        fileCount: activeFiles.length,
+        totalSize: activeFiles.reduce((acc, file) => acc + (file.size_bytes || 0), 0)
+      };
+    }) || [];
 
     // Get top-level files (folder_id is null)
     const { data: files } = await supabase
@@ -73,16 +76,19 @@ exports.getAllFolders = async (req, res, next) => {
   try {
     const { data: foldersData, error } = await supabase
       .from('folders')
-      .select('id, name, parent_id, files(id, size_bytes)')
+      .select('id, name, parent_id, files(id, size_bytes, is_deleted)')
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .order('name');
       
-    const folders = foldersData?.map(f => ({
-      ...f,
-      fileCount: f.files ? f.files.length : 0,
-      totalSize: f.files ? f.files.reduce((acc, file) => acc + (file.size_bytes || 0), 0) : 0
-    })) || [];
+    const folders = foldersData?.map(f => {
+      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
+      return {
+        ...f,
+        fileCount: activeFiles.length,
+        totalSize: activeFiles.reduce((acc, file) => acc + (file.size_bytes || 0), 0)
+      };
+    }) || [];
 
     if (error) {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
@@ -114,16 +120,19 @@ exports.getFolder = async (req, res, next) => {
     // 2. Get children (subfolders)
     const { data: subfoldersData } = await supabase
       .from('folders')
-      .select('*, files(id, size_bytes)')
+      .select('*, files(id, size_bytes, is_deleted)')
       .eq('parent_id', id)
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
 
-    const folders = subfoldersData?.map(f => ({
-      ...f,
-      fileCount: f.files ? f.files.length : 0,
-      totalSize: f.files ? f.files.reduce((acc, file) => acc + (file.size_bytes || 0), 0) : 0
-    })) || [];
+    const folders = subfoldersData?.map(f => {
+      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
+      return {
+        ...f,
+        fileCount: activeFiles.length,
+        totalSize: activeFiles.reduce((acc, file) => acc + (file.size_bytes || 0), 0)
+      };
+    }) || [];
 
     // 3. Get children (files)
     const { data: files } = await supabase
