@@ -198,6 +198,31 @@ npm run dev
 ```
 The API server will be running (usually at **http://localhost:5000** or based on your `.env` port).
 
+### 🗄️ Database Setup (Supabase)
+
+If you are setting up the database tables from scratch, ensure you have linked your Supabase project and applied the migrations:
+
+**1. Login to Supabase CLI (if not already logged in)**
+```bash
+npx supabase login
+```
+
+**2. Initialize Supabase in the project (if not done)**
+```bash
+npx supabase init
+```
+
+**3. Link your Supabase Project**
+```bash
+npx supabase link --project-ref <your-project-ref>
+```
+*(You will need your database password for this step)*
+
+**4. Create the Database Tables**
+All the necessary SQL queries to create your tables, functions, and triggers are located in the `src/db/migrations/` folder. 
+
+To apply these migrations, open your Supabase project in the browser, navigate to the **SQL Editor**, and copy-paste the contents of each `.sql` file (in numerical order) from `src/db/migrations/` to run them.
+
 <br/>
 
 ## 🤝 Contributing
