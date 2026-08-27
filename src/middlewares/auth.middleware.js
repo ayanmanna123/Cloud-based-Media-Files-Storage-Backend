@@ -4,7 +4,7 @@ const supabase = require('../config/supabase');
 
 const protect = async (req, res, next) => {
   try {
-    const token = req.cookies.jwt;
+    const token = req.cookies?.jwt || req.query?.token;
 
     if (!token) {
       throw new AppError('Not authorized to access this route', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);

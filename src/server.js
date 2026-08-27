@@ -26,7 +26,10 @@ initCronJobs();
 // Global Middlewares
 app.use(helmet({
   crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false,
 }));
+
 app.use(limiter); // Apply rate limiting to all requests
 const allowedOrigins = ['http://localhost:5173', 'https://cloud-based-media-files-storage-fro.vercel.app'];
 app.use(cors({

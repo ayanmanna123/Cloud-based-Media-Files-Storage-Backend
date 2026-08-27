@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const imagekit = require('../config/imagekit');
+const telegramStorageService = require('../services/telegramStorage.service');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 const crypto = require('crypto');
@@ -102,7 +103,22 @@ exports.initFileUpload = async (req, res, next) => {
         fileId = newFile.id;
     }
 
-    // 2. Generate ImageKit Auth Params for client-side upload
+    // Determine active storage provider
+    const provider = process.env.STORAGE_PROVIDER || (telegramStorageService.isConfigured() ? 'telegram' : 'imagekit');
+
+    if (provider === 'telegram') {
+      return res.status(200).json({
+        fileId: fileId,
+        storageKey: storageKey,
+        isNewVersion,
+        upload: {
+          method: 'telegram',
+          endpoint: '/api/files/upload-telegram',
+        },
+      });
+    }
+
+    // Default: ImageKit Auth Params for client-side upload
     const authParams = imagekit.getAuthenticationParameters();
 
     res.status(200).json({
@@ -215,6 +231,165 @@ exports.completeFileUpload = async (req, res, next) => {
   }
 };
 
+exports.uploadTelegramFile = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      throw new AppError('No file uploaded', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    const { name, folderId, targetFileId, fileId, isNewVersion: isNewVersionBody } = req.body;
+    const fileName = name || req.file.originalname;
+    const mimeType = req.file.mimetype;
+    const sizeBytes = req.file.size;
+
+    // Upload file buffer to Telegram Channel
+    const { fileId: tgFileId, messageId } = await telegramStorageService.uploadFile(
+      req.file.buffer,
+      fileName,
+      mimeType
+    );
+
+    const storageKey = `tg:${tgFileId}`;
+    let fileRecord;
+
+    const existingId = targetFileId || fileId;
+
+    if (existingId) {
+      const { data: existing, error: findError } = await supabase
+        .from('files')
+        .select('*')
+        .eq('id', existingId)
+        .eq('is_deleted', false)
+        .single();
+
+      if (!findError && existing) {
+        fileRecord = existing;
+      }
+    }
+
+    const isNewVersion = isNewVersionBody === 'true' || Boolean(targetFileId && fileRecord);
+
+    if (isNewVersion && fileRecord) {
+      const { data: versions } = await supabase
+        .from('file_versions')
+        .select('version_number')
+        .eq('file_id', fileRecord.id)
+        .order('version_number', { ascending: false })
+        .limit(1);
+
+      const nextVersion = (versions && versions.length > 0) ? versions[0].version_number + 1 : 2;
+
+      const { data: newVersion, error: vErr } = await supabase
+        .from('file_versions')
+        .insert([{
+          file_id: fileRecord.id,
+          version_number: nextVersion,
+          storage_key: storageKey,
+          size_bytes: sizeBytes,
+        }])
+        .select('id')
+        .single();
+
+      if (vErr) throw new AppError(vErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+
+      const { data: updatedFile, error: updateErr } = await supabase
+        .from('files')
+        .update({
+          version_id: newVersion.id,
+          storage_key: storageKey,
+          size_bytes: sizeBytes,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', fileRecord.id)
+        .select()
+        .single();
+
+      if (updateErr) throw new AppError(updateErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      fileRecord = updatedFile;
+    } else if (fileRecord) {
+      // Update initial file record created during initFileUpload
+      const { data: updatedFile, error: updateErr } = await supabase
+        .from('files')
+        .update({
+          storage_key: storageKey,
+          mime_type: mimeType,
+          size_bytes: sizeBytes,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', fileRecord.id)
+        .select()
+        .single();
+
+      if (updateErr) throw new AppError(updateErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      fileRecord = updatedFile;
+
+      const { data: version, error: vErr } = await supabase
+        .from('file_versions')
+        .insert([{
+          file_id: fileRecord.id,
+          version_number: 1,
+          storage_key: storageKey,
+          size_bytes: sizeBytes,
+        }])
+        .select('id')
+        .single();
+
+      if (!vErr && version) {
+        await supabase
+          .from('files')
+          .update({ version_id: version.id })
+          .eq('id', fileRecord.id);
+      }
+    } else {
+      // Fallback: create new file record if init was not called
+      const { data: newFile, error: insertErr } = await supabase
+        .from('files')
+        .insert([{
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: sizeBytes,
+          storage_key: storageKey,
+          owner_id: req.user.id,
+          folder_id: folderId || null,
+        }])
+        .select()
+        .single();
+
+      if (insertErr) throw new AppError(insertErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      fileRecord = newFile;
+
+      const { data: version, error: vErr } = await supabase
+        .from('file_versions')
+        .insert([{
+          file_id: fileRecord.id,
+          version_number: 1,
+          storage_key: storageKey,
+          size_bytes: sizeBytes,
+        }])
+        .select('id')
+        .single();
+
+      if (!vErr && version) {
+        await supabase
+          .from('files')
+          .update({ version_id: version.id })
+          .eq('id', fileRecord.id);
+      }
+    }
+
+
+    const signedUrl = await telegramStorageService.getFileUrl(tgFileId);
+
+    res.status(200).json({
+      status: 'success',
+      file: keysToCamel(fileRecord),
+      signedUrl,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getFile = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -231,18 +406,57 @@ exports.getFile = async (req, res, next) => {
       throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
-    // Generate signed URL via ImageKit if it's private, or just standard URL
-    // Depending on ImageKit config, you can sign it
-    const signedUrl = imagekit.url({
-      path: file.storage_key.startsWith('/') ? file.storage_key : '/' + file.storage_key,
-      signed: true,
-      expireSeconds: 3600, // 1 hour
-    });
+    let signedUrl;
+    if (file.storage_key && file.storage_key.startsWith('tg:')) {
+      const tgFileId = file.storage_key.replace(/^tg:/, '');
+      signedUrl = await telegramStorageService.getFileUrl(tgFileId);
+    } else {
+      signedUrl = imagekit.url({
+        path: file.storage_key.startsWith('/') ? file.storage_key : '/' + file.storage_key,
+        signed: true,
+        expireSeconds: 3600, // 1 hour
+      });
+    }
 
     res.status(200).json({
       file: keysToCamel(file),
       signedUrl,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.viewFile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const { data: file, error } = await supabase
+      .from('files')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error || !file) {
+      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+    if (file.storage_key && file.storage_key.startsWith('tg:')) {
+      const tgFileId = file.storage_key.replace(/^tg:/, '');
+      const directUrl = await telegramStorageService.getFileUrl(tgFileId);
+      return res.redirect(302, directUrl);
+    } else {
+      const signedUrl = imagekit.url({
+        path: file.storage_key.startsWith('/') ? file.storage_key : '/' + file.storage_key,
+        signed: true,
+        expireSeconds: 3600,
+      });
+      return res.redirect(302, signedUrl);
+    }
+
   } catch (error) {
     next(error);
   }
