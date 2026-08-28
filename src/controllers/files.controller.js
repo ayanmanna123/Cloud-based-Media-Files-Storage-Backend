@@ -255,15 +255,29 @@ exports.completeFileUpload = async (req, res, next) => {
     }
 
     if (isNewVersion) {
-      // Get max version number
+      // Get all version numbers for this file
       const { data: versions } = await supabase
         .from('file_versions')
         .select('version_number')
         .eq('file_id', file.id)
-        .order('version_number', { ascending: false })
-        .limit(1);
+        .order('version_number', { ascending: false });
         
-      const nextVersion = (versions && versions.length > 0) ? versions[0].version_number + 1 : 2;
+      const hasVersion1 = (versions || []).some(v => v.version_number === 1);
+      if (!hasVersion1) {
+        // Create missing Version 1 entry first using original file storage info
+        await supabase
+          .from('file_versions')
+          .insert([{
+            file_id: file.id,
+            version_number: 1,
+            storage_key: file.storage_key,
+            size_bytes: file.size_bytes,
+            created_at: file.created_at || new Date().toISOString()
+          }]);
+      }
+
+      const maxVer = (versions && versions.length > 0) ? Math.max(...versions.map(v => v.version_number)) : 1;
+      const nextVersion = maxVer + 1;
 
       const { data: newVersion, error: versionError } = await supabase
         .from('file_versions')
@@ -475,19 +489,19 @@ exports.getFileVersions = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Verify ownership
-    const { data: file, error: fileError } = await supabase
-      .from('files')
-      .select('id')
-      .eq('id', id)
-      .eq('owner_id', req.user.id)
-      .single();
-
-    if (fileError || !file) {
+    // Verify user has access to this file (owner, directly shared, or parent folder shared)
+    const hasAccess = await checkFileAccess(id, req.user.id);
+    if (!hasAccess) {
       throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
-    const { data: versions, error: versionError } = await supabase
+    const { data: file } = await supabase
+      .from('files')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    let { data: versions, error: versionError } = await supabase
       .from('file_versions')
       .select('*')
       .eq('file_id', id)
@@ -497,7 +511,32 @@ exports.getFileVersions = async (req, res, next) => {
       throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
-    res.status(200).json(keysToCamel(versions));
+    // Auto-heal missing Version 1 entry if history exists but Version 1 is missing
+    const hasVersion1 = (versions || []).some(v => v.version_number === 1);
+    if (!hasVersion1 && file) {
+      const { data: v1 } = await supabase
+        .from('file_versions')
+        .insert([{
+          file_id: file.id,
+          version_number: 1,
+          storage_key: file.storage_key,
+          size_bytes: file.size_bytes,
+          created_at: file.created_at || new Date().toISOString()
+        }])
+        .select('*')
+        .single();
+
+      if (v1) {
+        const { data: refreshedVersions } = await supabase
+          .from('file_versions')
+          .select('*')
+          .eq('file_id', id)
+          .order('version_number', { ascending: false });
+        versions = refreshedVersions || [...(versions || []), v1];
+      }
+    }
+
+    res.status(200).json(keysToCamel(versions || []));
   } catch (error) {
     next(error);
   }
@@ -512,16 +551,10 @@ exports.restoreFileVersion = async (req, res, next) => {
       throw new AppError('Version ID is required', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
-    // Verify ownership
-    const { data: file, error: fileError } = await supabase
-      .from('files')
-      .select('id')
-      .eq('id', id)
-      .eq('owner_id', req.user.id)
-      .single();
-
-    if (fileError || !file) {
-      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    // Verify editor access (owner, directly shared editor, or parent folder editor)
+    const isEditor = await checkFileEditor(id, req.user.id);
+    if (!isEditor) {
+      throw new AppError('File not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
     }
 
     // Get the version details
