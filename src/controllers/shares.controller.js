@@ -2,6 +2,7 @@ const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 const { sendShareEmail } = require('../utils/email');
+const { getPersonalHiddenIds } = require('../utils/hiddenItems');
 
 const getFolderMetrics = (folderId, allFolders, allFiles) => {
   const directSubfolders = allFolders.filter(f => f.parent_id === folderId && !f.is_deleted && !f.is_hidden);
@@ -89,6 +90,8 @@ exports.createShare = async (req, res, next) => {
 
 exports.getSharedWithMe = async (req, res, next) => {
   try {
+    const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
+
     const { data: shares, error } = await supabase
       .from('shares')
       .select('resource_type, resource_id, role, created_by:users!shares_created_by_fkey(id, name, email)')
@@ -103,12 +106,16 @@ exports.getSharedWithMe = async (req, res, next) => {
     let files = [];
 
     if (folderIds.length > 0) {
-      const { data: f } = await supabase
+      let query = supabase
         .from('folders')
         .select('*')
         .in('id', folderIds)
-        .eq('is_deleted', false)
-        .eq('is_hidden', false);
+        .eq('is_deleted', false);
+        
+      if (hiddenFolderIds.length > 0) {
+        query = query.not('id', 'in', `(${hiddenFolderIds.join(',')})`);
+      }
+      const { data: f } = await query;
 
       const activeFolders = f || [];
 
@@ -116,11 +123,11 @@ exports.getSharedWithMe = async (req, res, next) => {
         const ownerIds = [...new Set(activeFolders.map(folder => folder.owner_id))];
         const [allFoldersRes, allFilesRes] = await Promise.all([
           supabase.from('folders').select('id, parent_id, is_deleted, is_hidden').in('owner_id', ownerIds),
-          supabase.from('files').select('id, folder_id, size_bytes').in('owner_id', ownerIds).eq('is_deleted', false).eq('is_hidden', false)
+          supabase.from('files').select('id, folder_id, size_bytes').in('owner_id', ownerIds).eq('is_deleted', false)
         ]);
 
-        const allFolders = allFoldersRes.data || [];
-        const allFiles = allFilesRes.data || [];
+        const allFolders = (allFoldersRes.data || []).filter(folder => !hiddenFolderIds.includes(folder.id));
+        const allFiles = (allFilesRes.data || []).filter(file => !hiddenFileIds.includes(file.id));
 
         folders = activeFolders.map(folder => {
           const share = shares.find(s => s.resource_type === 'folder' && s.resource_id === folder.id);
@@ -139,12 +146,16 @@ exports.getSharedWithMe = async (req, res, next) => {
     }
     
     if (fileIds.length > 0) {
-      const { data: f } = await supabase
+      let query = supabase
         .from('files')
         .select('*')
         .in('id', fileIds)
-        .eq('is_deleted', false)
-        .eq('is_hidden', false);
+        .eq('is_deleted', false);
+        
+      if (hiddenFileIds.length > 0) {
+        query = query.not('id', 'in', `(${hiddenFileIds.join(',')})`);
+      }
+      const { data: f } = await query;
 
       files = (f || []).map(file => {
         const share = shares.find(s => s.resource_type === 'file' && s.resource_id === file.id);

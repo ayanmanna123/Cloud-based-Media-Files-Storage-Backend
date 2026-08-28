@@ -117,7 +117,6 @@ exports.getLink = async (req, res, next) => {
         .select('*')
         .eq('id', link.resource_id)
         .eq('is_deleted', false)
-        .eq('is_hidden', false)
         .single();
       resourceData = file;
     } else if (link.resource_type === 'folder') {
@@ -126,7 +125,6 @@ exports.getLink = async (req, res, next) => {
         .select('*')
         .eq('id', link.resource_id)
         .eq('is_deleted', false)
-        .eq('is_hidden', false)
         .single();
       resourceData = folder;
       
@@ -135,8 +133,7 @@ exports.getLink = async (req, res, next) => {
         .from('files')
         .select('*')
         .eq('folder_id', link.resource_id)
-        .eq('is_deleted', false)
-        .eq('is_hidden', false);
+        .eq('is_deleted', false);
       if (files) {
         folderFiles = files;
       }

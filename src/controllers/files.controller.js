@@ -2,6 +2,7 @@ const supabase = require('../config/supabase');
 const imagekit = require('../config/imagekit');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const { getPersonalHiddenIds } = require('../utils/hiddenItems');
 const crypto = require('crypto');
 const getFolderShareRole = async (folderId, userId) => {
   let currentId = folderId;
@@ -248,19 +249,9 @@ exports.completeFileUpload = async (req, res, next) => {
     }
     
     // Check permission
-    if (file.owner_id !== req.user.id) {
-      const { data: shareData } = await supabase
-        .from('shares')
-        .select('role')
-        .eq('resource_type', 'file')
-        .eq('resource_id', fileId)
-        .eq('grantee_user_id', req.user.id)
-        .eq('role', 'editor')
-        .single();
-        
-      if (!shareData) {
-        throw new AppError('Unauthorized to update this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
-      }
+    const isEditor = await checkFileEditor(fileId, req.user.id);
+    if (!isEditor) {
+      throw new AppError('Unauthorized to update this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
     }
 
     if (isNewVersion) {
@@ -371,9 +362,16 @@ exports.updateFile = async (req, res, next) => {
     const { id } = req.params;
     const { name, folderId, isHidden } = req.body;
 
-    const isEditor = await checkFileEditor(id, req.user.id);
-    if (!isEditor) {
+    const hasAccess = await checkFileAccess(id, req.user.id);
+    if (!hasAccess) {
       throw new AppError('File not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
+    if (name || folderId !== undefined) {
+      const isEditor = await checkFileEditor(id, req.user.id);
+      if (!isEditor) {
+        throw new AppError('File not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
     }
 
     if (folderId) {
@@ -383,26 +381,62 @@ exports.updateFile = async (req, res, next) => {
       }
     }
 
-    const updates = {};
-    if (name) updates.name = name;
-    if (folderId !== undefined) updates.folder_id = folderId;
-    if (isHidden !== undefined) updates.is_hidden = isHidden;
-    updates.updated_at = new Date().toISOString();
+    if (isHidden !== undefined) {
+      if (isHidden) {
+        const { error: upsertErr } = await supabase
+          .from('user_hidden_items')
+          .upsert([{ user_id: req.user.id, resource_type: 'file', resource_id: id }]);
+        if (upsertErr) {
+          console.error("user_hidden_items upsert failed, updating legacy is_hidden column:", upsertErr.message);
+          await supabase.from('files').update({ is_hidden: true }).eq('id', id);
+        }
+      } else {
+        await supabase
+          .from('user_hidden_items')
+          .delete()
+          .eq('user_id', req.user.id)
+          .eq('resource_type', 'file')
+          .eq('resource_id', id);
+        await supabase.from('files').update({ is_hidden: false }).eq('id', id);
+      }
+    }
 
-    const { data, error } = await supabase
-      .from('files')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
+    let data = null;
+    if (name || folderId !== undefined) {
+      const updates = {};
+      if (name) updates.name = name;
+      if (folderId !== undefined) updates.folder_id = folderId;
+      updates.updated_at = new Date().toISOString();
 
-    if (error || !data) {
-      throw new AppError('File not found or update failed', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+      const { data: updatedData, error } = await supabase
+        .from('files')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error || !updatedData) {
+        throw new AppError('File update failed', ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+      data = updatedData;
+    } else {
+      const { data: existingData } = await supabase
+        .from('files')
+        .select('*')
+        .eq('id', id)
+        .single();
+      data = existingData;
     }
 
     // Log rename/move activity here...
 
-    res.status(200).json(keysToCamel(data));
+    const { hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
+    const result = {
+      ...data,
+      isHidden: isHidden !== undefined ? isHidden : hiddenFileIds.includes(data?.id)
+    };
+
+    res.status(200).json(keysToCamel(result));
   } catch (error) {
     next(error);
   }

@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const { getPersonalHiddenIds } = require('../utils/hiddenItems');
 const getFolderMetrics = (folderId, allFolders, allFiles) => {
   const directSubfolders = allFolders.filter(f => f.parent_id === folderId && !f.is_deleted && !f.is_hidden);
   
@@ -115,6 +116,8 @@ exports.createFolder = async (req, res, next) => {
 
 exports.getRoot = async (req, res, next) => {
   try {
+    const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
+
     // Get all folders to compute subfolder count in memory
     const { data: allUserFolders } = await supabase
       .from('folders')
@@ -126,20 +129,27 @@ exports.getRoot = async (req, res, next) => {
       .from('files')
       .select('id, folder_id, size_bytes')
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', false);
+      .eq('is_deleted', false);
+
+    // Filter hidden out of metrics memory
+    const activeFoldersForMetrics = (allUserFolders || []).filter(f => !hiddenFolderIds.includes(f.id));
+    const activeFilesForMetrics = (allUserFiles || []).filter(f => !hiddenFileIds.includes(f.id));
 
     // Get top-level folders (parent_id is null)
-    const { data: foldersData } = await supabase
+    let foldersQuery = supabase
       .from('folders')
       .select('*')
       .is('parent_id', null)
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', false);
+      .eq('is_deleted', false);
+
+    if (hiddenFolderIds.length > 0) {
+      foldersQuery = foldersQuery.not('id', 'in', `(${hiddenFolderIds.join(',')})`);
+    }
+    const { data: foldersData } = await foldersQuery;
 
     const folders = foldersData?.map(f => {
-      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
+      const metrics = getFolderMetrics(f.id, activeFoldersForMetrics, activeFilesForMetrics);
       return {
         ...f,
         fileCount: metrics.fileCount,
@@ -149,13 +159,17 @@ exports.getRoot = async (req, res, next) => {
     }) || [];
 
     // Get top-level files (folder_id is null)
-    const { data: files } = await supabase
+    let filesQuery = supabase
       .from('files')
       .select('*')
       .is('folder_id', null)
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', false);
+      .eq('is_deleted', false);
+
+    if (hiddenFileIds.length > 0) {
+      filesQuery = filesQuery.not('id', 'in', `(${hiddenFileIds.join(',')})`);
+    }
+    const { data: files } = await filesQuery;
 
     res.status(200).json({
       folder: { name: 'My Drive', id: null },
@@ -172,16 +186,22 @@ exports.getRoot = async (req, res, next) => {
 
 exports.getAllFolders = async (req, res, next) => {
   try {
-    const { data: foldersData, error } = await supabase
+    const { hiddenFolderIds } = await getPersonalHiddenIds(req.user.id);
+
+    let query = supabase
       .from('folders')
-      .select('id, name, parent_id, files(id, size_bytes, is_deleted, is_hidden)')
+      .select('id, name, parent_id, files(id, size_bytes, is_deleted)')
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
-      .eq('is_hidden', false)
       .order('name');
+
+    if (hiddenFolderIds.length > 0) {
+      query = query.not('id', 'in', `(${hiddenFolderIds.join(',')})`);
+    }
+    const { data: foldersData, error } = await query;
       
     const folders = foldersData?.map(f => {
-      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted && !file.is_hidden) : [];
+      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
       return {
         ...f,
         fileCount: activeFiles.length,
@@ -209,6 +229,8 @@ exports.getFolder = async (req, res, next) => {
       throw new AppError('Folder not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
+    const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
+
     // 1. Get the folder itself
     const { data: folder, error: folderError } = await supabase
       .from('folders')
@@ -234,19 +256,26 @@ exports.getFolder = async (req, res, next) => {
       .from('files')
       .select('id, folder_id, size_bytes')
       .or(`owner_id.eq.${ownerId},owner_id.eq.${req.user.id}`)
-      .eq('is_deleted', false)
-      .eq('is_hidden', false);
+      .eq('is_deleted', false);
+
+    // Filter hidden out of metrics memory
+    const activeFoldersForMetrics = (allUserFolders || []).filter(f => !hiddenFolderIds.includes(f.id));
+    const activeFilesForMetrics = (allUserFiles || []).filter(f => !hiddenFileIds.includes(f.id));
 
     // 2. Get children (subfolders)
-    const { data: subfoldersData } = await supabase
+    let subfoldersQuery = supabase
       .from('folders')
       .select('*')
       .eq('parent_id', id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', false);
+      .eq('is_deleted', false);
+
+    if (hiddenFolderIds.length > 0) {
+      subfoldersQuery = subfoldersQuery.not('id', 'in', `(${hiddenFolderIds.join(',')})`);
+    }
+    const { data: subfoldersData } = await subfoldersQuery;
 
     const folders = subfoldersData?.map(f => {
-      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
+      const metrics = getFolderMetrics(f.id, activeFoldersForMetrics, activeFilesForMetrics);
       return {
         ...f,
         fileCount: metrics.fileCount,
@@ -256,12 +285,16 @@ exports.getFolder = async (req, res, next) => {
     }) || [];
 
     // 3. Get children (files)
-    const { data: files } = await supabase
+    let filesQuery = supabase
       .from('files')
       .select('*')
       .eq('folder_id', id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', false);
+      .eq('is_deleted', false);
+
+    if (hiddenFileIds.length > 0) {
+      filesQuery = filesQuery.not('id', 'in', `(${hiddenFileIds.join(',')})`);
+    }
+    const { data: files } = await filesQuery;
 
     // 4. Build path recursively (or iteratively)
     let path = [];
@@ -309,9 +342,16 @@ exports.updateFolder = async (req, res, next) => {
     const { id } = req.params;
     const { name, parentId, isHidden } = req.body;
 
-    const isEditor = await checkFolderEditor(id, req.user.id);
-    if (!isEditor) {
+    const hasAccess = await checkFolderAccess(id, req.user.id);
+    if (!hasAccess) {
       throw new AppError('Folder not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
+    if (name || parentId !== undefined) {
+      const isEditor = await checkFolderEditor(id, req.user.id);
+      if (!isEditor) {
+        throw new AppError('Folder not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
     }
 
     if (parentId) {
@@ -321,24 +361,60 @@ exports.updateFolder = async (req, res, next) => {
       }
     }
 
-    const updates = {};
-    if (name) updates.name = name;
-    if (parentId !== undefined) updates.parent_id = parentId;
-    if (isHidden !== undefined) updates.is_hidden = isHidden;
-    updates.updated_at = new Date().toISOString();
-
-    const { data, error } = await supabase
-      .from('folders')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error || !data) {
-      throw new AppError('Folder not found or update failed', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    if (isHidden !== undefined) {
+      if (isHidden) {
+        const { error: upsertErr } = await supabase
+          .from('user_hidden_items')
+          .upsert([{ user_id: req.user.id, resource_type: 'folder', resource_id: id }]);
+        if (upsertErr) {
+          console.error("user_hidden_items upsert failed, updating legacy is_hidden column:", upsertErr.message);
+          await supabase.from('folders').update({ is_hidden: true }).eq('id', id);
+        }
+      } else {
+        await supabase
+          .from('user_hidden_items')
+          .delete()
+          .eq('user_id', req.user.id)
+          .eq('resource_type', 'folder')
+          .eq('resource_id', id);
+        await supabase.from('folders').update({ is_hidden: false }).eq('id', id);
+      }
     }
 
-    res.status(200).json(keysToCamel(data));
+    let data = null;
+    if (name || parentId !== undefined) {
+      const updates = {};
+      if (name) updates.name = name;
+      if (parentId !== undefined) updates.parent_id = parentId;
+      updates.updated_at = new Date().toISOString();
+
+      const { data: updatedData, error } = await supabase
+        .from('folders')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error || !updatedData) {
+        throw new AppError('Folder update failed', ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+      data = updatedData;
+    } else {
+      const { data: existingData } = await supabase
+        .from('folders')
+        .select('*')
+        .eq('id', id)
+        .single();
+      data = existingData;
+    }
+
+    const { hiddenFolderIds } = await getPersonalHiddenIds(req.user.id);
+    const result = {
+      ...data,
+      isHidden: isHidden !== undefined ? isHidden : hiddenFolderIds.includes(data?.id)
+    };
+
+    res.status(200).json(keysToCamel(result));
   } catch (error) {
     next(error);
   }
@@ -346,54 +422,90 @@ exports.updateFolder = async (req, res, next) => {
 
 exports.getHiddenItems = async (req, res, next) => {
   try {
+    const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
+
+    // Also include items where legacy is_hidden is true for the current user
+    const { data: legacyHiddenFolders } = await supabase
+      .from('folders')
+      .select('id')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .eq('is_hidden', true);
+
+    const { data: legacyHiddenFiles } = await supabase
+      .from('files')
+      .select('id')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .eq('is_hidden', true);
+
+    const combinedFolderIds = [...new Set([...hiddenFolderIds, ...(legacyHiddenFolders || []).map(f => f.id)])];
+    const combinedFileIds = [...new Set([...hiddenFileIds, ...(legacyHiddenFiles || []).map(f => f.id)])];
+
     // Get all folders to compute subfolder count in memory
     const { data: allUserFolders } = await supabase
       .from('folders')
       .select('id, parent_id, is_deleted, is_hidden')
       .eq('owner_id', req.user.id);
 
-    // Fetch all active files (including hidden ones) to calculate correct metrics
+    // Fetch all active files to calculate correct metrics
     const { data: allUserFiles } = await supabase
       .from('files')
       .select('id, folder_id, size_bytes')
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
 
-    const { data: foldersData, error: folderError } = await supabase
-      .from('folders')
-      .select('*')
-      .eq('owner_id', req.user.id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', true);
+    // Filter metrics using personal hidden lists
+    const activeFoldersForMetrics = (allUserFolders || []).filter(f => !combinedFolderIds.includes(f.id));
+    const activeFilesForMetrics = (allUserFiles || []).filter(f => !combinedFileIds.includes(f.id));
 
-    if (folderError) {
-      throw new AppError(folderError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    // Get personal hidden folders
+    let folders = [];
+    if (combinedFolderIds.length > 0) {
+      const { data: foldersData, error: folderError } = await supabase
+        .from('folders')
+        .select('*')
+        .in('id', combinedFolderIds)
+        .eq('is_deleted', false);
+
+      if (folderError) {
+        throw new AppError(folderError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+
+      folders = foldersData?.map(f => {
+        const metrics = getFolderMetrics(f.id, activeFoldersForMetrics, activeFilesForMetrics);
+        return {
+          ...f,
+          fileCount: metrics.fileCount,
+          folderCount: metrics.folderCount,
+          totalSize: metrics.totalSize,
+          isHidden: true
+        };
+      }) || [];
     }
 
-    const folders = foldersData?.map(f => {
-      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
-      return {
+    // Get personal hidden files
+    let files = [];
+    if (combinedFileIds.length > 0) {
+      const { data: filesData, error: fileError } = await supabase
+        .from('files')
+        .select('*')
+        .in('id', combinedFileIds)
+        .eq('is_deleted', false);
+
+      if (fileError) {
+        throw new AppError(fileError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+      }
+
+      files = filesData?.map(f => ({
         ...f,
-        fileCount: metrics.fileCount,
-        folderCount: metrics.folderCount,
-        totalSize: metrics.totalSize
-      };
-    }) || [];
-
-    const { data: files, error: fileError } = await supabase
-      .from('files')
-      .select('*')
-      .eq('owner_id', req.user.id)
-      .eq('is_deleted', false)
-      .eq('is_hidden', true);
-
-    if (fileError) {
-      throw new AppError(fileError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+        isHidden: true
+      })) || [];
     }
 
     res.status(200).json({
       folders: keysToCamel(folders),
-      files: keysToCamel(files || [])
+      files: keysToCamel(files)
     });
   } catch (error) {
     next(error);

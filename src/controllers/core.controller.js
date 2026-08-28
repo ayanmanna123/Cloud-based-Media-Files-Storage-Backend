@@ -2,25 +2,30 @@ const supabase = require('../config/supabase');
 const imagekit = require('../config/imagekit');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const { getPersonalHiddenIds } = require('../utils/hiddenItems');
 
 exports.search = async (req, res, next) => {
   try {
     const { q, type, starred } = req.query;
-    // Basic search implementation. 
-    // If using the GIN index for full-text search on files, we would use `.textSearch('name', q)`
-    // Here we use ilike for simplicity across both files and folders
+    const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
 
     let results = [];
 
     if (!type || type === 'file') {
-      let query = supabase.from('files').select('*').eq('owner_id', req.user.id).eq('is_deleted', false).eq('is_hidden', false);
+      let query = supabase.from('files').select('*').eq('owner_id', req.user.id).eq('is_deleted', false);
+      if (hiddenFileIds.length > 0) {
+        query = query.not('id', 'in', `(${hiddenFileIds.join(',')})`);
+      }
       if (q) query = query.ilike('name', `%${q}%`);
       const { data: files } = await query;
       if (files) results = results.concat(files.map(f => ({ ...f, type: 'file' })));
     }
 
     if (!type || type === 'folder') {
-      let query = supabase.from('folders').select('*').eq('owner_id', req.user.id).eq('is_deleted', false).eq('is_hidden', false);
+      let query = supabase.from('folders').select('*').eq('owner_id', req.user.id).eq('is_deleted', false);
+      if (hiddenFolderIds.length > 0) {
+        query = query.not('id', 'in', `(${hiddenFolderIds.join(',')})`);
+      }
       if (q) query = query.ilike('name', `%${q}%`);
       const { data: folders } = await query;
       if (folders) results = results.concat(folders.map(f => ({ ...f, type: 'folder' })));

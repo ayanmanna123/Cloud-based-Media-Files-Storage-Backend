@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const { getPersonalHiddenIds } = require('../utils/hiddenItems');
 const getFolderMetrics = (folderId, allFolders, allFiles) => {
   const directSubfolders = allFolders.filter(f => f.parent_id === folderId && !f.is_deleted && !f.is_hidden);
   
@@ -99,8 +100,15 @@ exports.getRecentItems = async (req, res, next) => {
       uniqueFoldersMap.set(f.id, f);
     });
 
-    const uniqueFiles = Array.from(uniqueFilesMap.values()).map(f => ({ ...f, item_type: 'file' }));
-    const uniqueFolders = Array.from(uniqueFoldersMap.values()).map(f => ({ ...f, item_type: 'folder' }));
+    const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(userId);
+
+    const uniqueFiles = Array.from(uniqueFilesMap.values())
+      .filter(f => !hiddenFileIds.includes(f.id))
+      .map(f => ({ ...f, item_type: 'file' }));
+      
+    const uniqueFolders = Array.from(uniqueFoldersMap.values())
+      .filter(f => !hiddenFolderIds.includes(f.id))
+      .map(f => ({ ...f, item_type: 'folder' }));
 
     // Combine and sort
     const combined = [...uniqueFiles, ...uniqueFolders];
