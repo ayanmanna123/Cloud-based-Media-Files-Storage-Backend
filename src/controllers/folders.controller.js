@@ -1,7 +1,28 @@
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const getFolderMetrics = (folderId, allFolders, allFiles) => {
+  const directSubfolders = allFolders.filter(f => f.parent_id === folderId && !f.is_deleted && !f.is_hidden);
+  
+  const getAllDescendantFolderIds = (id) => {
+    let ids = [];
+    const children = allFolders.filter(f => f.parent_id === id && !f.is_deleted && !f.is_hidden);
+    for (const child of children) {
+      ids.push(child.id);
+      ids = ids.concat(getAllDescendantFolderIds(child.id));
+    }
+    return ids;
+  };
+  
+  const allDescendantFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
+  const allNestedFiles = allFiles.filter(f => allDescendantFolderIds.includes(f.folder_id));
+  
+  const fileCount = allNestedFiles.length;
+  const totalSize = allNestedFiles.reduce((sum, f) => sum + (f.size_bytes || 0), 0);
+  const folderCount = directSubfolders.length;
 
+  return { fileCount, folderCount, totalSize };
+};
 exports.createFolder = async (req, res, next) => {
   try {
     const { name, parentId } = req.body;
@@ -34,20 +55,36 @@ exports.createFolder = async (req, res, next) => {
 
 exports.getRoot = async (req, res, next) => {
   try {
+    // Get all folders to compute subfolder count in memory
+    const { data: allUserFolders } = await supabase
+      .from('folders')
+      .select('id, parent_id, is_deleted, is_hidden')
+      .eq('owner_id', req.user.id);
+
+    // Fetch all active files for the user to compute recursive metrics
+    const { data: allUserFiles } = await supabase
+      .from('files')
+      .select('id, folder_id, size_bytes')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
+
     // Get top-level folders (parent_id is null)
     const { data: foldersData } = await supabase
       .from('folders')
-      .select('*, files(id, size_bytes, is_deleted)')
+      .select('*')
       .is('parent_id', null)
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false);
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
 
     const folders = foldersData?.map(f => {
-      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
+      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
       return {
         ...f,
-        fileCount: activeFiles.length,
-        totalSize: activeFiles.reduce((acc, file) => acc + (file.size_bytes || 0), 0)
+        fileCount: metrics.fileCount,
+        folderCount: metrics.folderCount,
+        totalSize: metrics.totalSize
       };
     }) || [];
 
@@ -57,7 +94,8 @@ exports.getRoot = async (req, res, next) => {
       .select('*')
       .is('folder_id', null)
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false);
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
 
     res.status(200).json({
       folder: { name: 'My Drive', id: null },
@@ -76,13 +114,14 @@ exports.getAllFolders = async (req, res, next) => {
   try {
     const { data: foldersData, error } = await supabase
       .from('folders')
-      .select('id, name, parent_id, files(id, size_bytes, is_deleted)')
+      .select('id, name, parent_id, files(id, size_bytes, is_deleted, is_hidden)')
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
+      .eq('is_hidden', false)
       .order('name');
       
     const folders = foldersData?.map(f => {
-      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
+      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted && !file.is_hidden) : [];
       return {
         ...f,
         fileCount: activeFiles.length,
@@ -117,20 +156,36 @@ exports.getFolder = async (req, res, next) => {
       throw new AppError('Folder not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
+    // Get all folders to compute subfolder count in memory
+    const { data: allUserFolders } = await supabase
+      .from('folders')
+      .select('id, parent_id, is_deleted, is_hidden')
+      .eq('owner_id', req.user.id);
+
+    // Fetch all active files for the user to compute recursive metrics
+    const { data: allUserFiles } = await supabase
+      .from('files')
+      .select('id, folder_id, size_bytes')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
+
     // 2. Get children (subfolders)
     const { data: subfoldersData } = await supabase
       .from('folders')
-      .select('*, files(id, size_bytes, is_deleted)')
+      .select('*')
       .eq('parent_id', id)
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false);
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
 
     const folders = subfoldersData?.map(f => {
-      const activeFiles = f.files ? f.files.filter(file => !file.is_deleted) : [];
+      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
       return {
         ...f,
-        fileCount: activeFiles.length,
-        totalSize: activeFiles.reduce((acc, file) => acc + (file.size_bytes || 0), 0)
+        fileCount: metrics.fileCount,
+        folderCount: metrics.folderCount,
+        totalSize: metrics.totalSize
       };
     }) || [];
 
@@ -140,7 +195,8 @@ exports.getFolder = async (req, res, next) => {
       .select('*')
       .eq('folder_id', id)
       .eq('owner_id', req.user.id)
-      .eq('is_deleted', false);
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
 
     // 4. Build path recursively (or iteratively)
     let path = [];
@@ -183,11 +239,12 @@ exports.getFolder = async (req, res, next) => {
 exports.updateFolder = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, parentId } = req.body;
+    const { name, parentId, isHidden } = req.body;
 
     const updates = {};
     if (name) updates.name = name;
     if (parentId !== undefined) updates.parent_id = parentId;
+    if (isHidden !== undefined) updates.is_hidden = isHidden;
     updates.updated_at = new Date().toISOString();
 
     const { data, error } = await supabase
@@ -203,6 +260,62 @@ exports.updateFolder = async (req, res, next) => {
     }
 
     res.status(200).json(keysToCamel(data));
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getHiddenItems = async (req, res, next) => {
+  try {
+    // Get all folders to compute subfolder count in memory
+    const { data: allUserFolders } = await supabase
+      .from('folders')
+      .select('id, parent_id, is_deleted, is_hidden')
+      .eq('owner_id', req.user.id);
+
+    // Fetch all active files (including hidden ones) to calculate correct metrics
+    const { data: allUserFiles } = await supabase
+      .from('files')
+      .select('id, folder_id, size_bytes')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false);
+
+    const { data: foldersData, error: folderError } = await supabase
+      .from('folders')
+      .select('*')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .eq('is_hidden', true);
+
+    if (folderError) {
+      throw new AppError(folderError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    const folders = foldersData?.map(f => {
+      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
+      return {
+        ...f,
+        fileCount: metrics.fileCount,
+        folderCount: metrics.folderCount,
+        totalSize: metrics.totalSize
+      };
+    }) || [];
+
+    const { data: files, error: fileError } = await supabase
+      .from('files')
+      .select('*')
+      .eq('owner_id', req.user.id)
+      .eq('is_deleted', false)
+      .eq('is_hidden', true);
+
+    if (fileError) {
+      throw new AppError(fileError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json({
+      folders: keysToCamel(folders),
+      files: keysToCamel(files || [])
+    });
   } catch (error) {
     next(error);
   }

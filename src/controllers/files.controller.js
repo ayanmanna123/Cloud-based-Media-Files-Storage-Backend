@@ -251,11 +251,12 @@ exports.getFile = async (req, res, next) => {
 exports.updateFile = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, folderId } = req.body;
+    const { name, folderId, isHidden } = req.body;
 
     const updates = {};
     if (name) updates.name = name;
     if (folderId !== undefined) updates.folder_id = folderId;
+    if (isHidden !== undefined) updates.is_hidden = isHidden;
     updates.updated_at = new Date().toISOString();
 
     const { data, error } = await supabase

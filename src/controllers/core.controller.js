@@ -13,14 +13,14 @@ exports.search = async (req, res, next) => {
     let results = [];
 
     if (!type || type === 'file') {
-      let query = supabase.from('files').select('*').eq('owner_id', req.user.id).eq('is_deleted', false);
+      let query = supabase.from('files').select('*').eq('owner_id', req.user.id).eq('is_deleted', false).eq('is_hidden', false);
       if (q) query = query.ilike('name', `%${q}%`);
       const { data: files } = await query;
       if (files) results = results.concat(files.map(f => ({ ...f, type: 'file' })));
     }
 
     if (!type || type === 'folder') {
-      let query = supabase.from('folders').select('*').eq('owner_id', req.user.id).eq('is_deleted', false);
+      let query = supabase.from('folders').select('*').eq('owner_id', req.user.id).eq('is_deleted', false).eq('is_hidden', false);
       if (q) query = query.ilike('name', `%${q}%`);
       const { data: folders } = await query;
       if (folders) results = results.concat(folders.map(f => ({ ...f, type: 'folder' })));

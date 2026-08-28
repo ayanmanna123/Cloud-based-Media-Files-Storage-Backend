@@ -399,9 +399,37 @@ exports.getMe = async (req, res, next) => {
     res.status(200).json({
       user: {
         ...req.user,
+        secretCode: req.user.secret_code,
         storageUsed,
         storageLimit
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateSecretCode = async (req, res, next) => {
+  try {
+    const { secretCode } = req.body;
+
+    if (!secretCode) {
+      throw new AppError('Secret code is required', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    const { error } = await supabase
+      .from('users')
+      .update({ secret_code: secretCode })
+      .eq('id', req.user.id);
+
+    if (error) {
+      throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Secret code updated successfully',
+      secretCode,
     });
   } catch (error) {
     next(error);

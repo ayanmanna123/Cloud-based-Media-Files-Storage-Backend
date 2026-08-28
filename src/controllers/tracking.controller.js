@@ -1,7 +1,28 @@
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
+const getFolderMetrics = (folderId, allFolders, allFiles) => {
+  const directSubfolders = allFolders.filter(f => f.parent_id === folderId && !f.is_deleted && !f.is_hidden);
+  
+  const getAllDescendantFolderIds = (id) => {
+    let ids = [];
+    const children = allFolders.filter(f => f.parent_id === id && !f.is_deleted && !f.is_hidden);
+    for (const child of children) {
+      ids.push(child.id);
+      ids = ids.concat(getAllDescendantFolderIds(child.id));
+    }
+    return ids;
+  };
+  
+  const allDescendantFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
+  const allNestedFiles = allFiles.filter(f => allDescendantFolderIds.includes(f.folder_id));
+  
+  const fileCount = allNestedFiles.length;
+  const totalSize = allNestedFiles.reduce((sum, f) => sum + (f.size_bytes || 0), 0);
+  const folderCount = directSubfolders.length;
 
+  return { fileCount, folderCount, totalSize };
+};
 exports.trackOpen = async (req, res, next) => {
   try {
     const { id, type } = req.body; // type is 'file' or 'folder'
@@ -48,11 +69,13 @@ exports.getRecentItems = async (req, res, next) => {
     const foldersOr = sharedFolderIds.length > 0 ? `owner_id.eq.${userId},id.in.(${sharedFolderIds.join(',')})` : `owner_id.eq.${userId}`;
 
     // Fetch top 50 files by open date and top 50 files by update date
-    const [filesOpen, filesUpdate, foldersOpen, foldersUpdate] = await Promise.all([
-      safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
-      safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50)),
-      safeQuery(supabase.from('folders').select('*, files(id, size_bytes, is_deleted)').or(foldersOr).eq('is_deleted', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
-      safeQuery(supabase.from('folders').select('*, files(id, size_bytes, is_deleted)').or(foldersOr).eq('is_deleted', false).order('updated_at', { ascending: false }).limit(50))
+    const [filesOpen, filesUpdate, foldersOpen, foldersUpdate, allUserFoldersData, allUserFilesData] = await Promise.all([
+      safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).eq('is_hidden', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
+      safeQuery(supabase.from('files').select('*').or(filesOr).eq('is_deleted', false).eq('is_hidden', false).order('updated_at', { ascending: false }).limit(50)),
+      safeQuery(supabase.from('folders').select('*').or(foldersOr).eq('is_deleted', false).eq('is_hidden', false).order('last_opened_at', { ascending: false, nullsFirst: false }).limit(50)),
+      safeQuery(supabase.from('folders').select('*').or(foldersOr).eq('is_deleted', false).eq('is_hidden', false).order('updated_at', { ascending: false }).limit(50)),
+      safeQuery(supabase.from('folders').select('id, parent_id, is_deleted, is_hidden').eq('owner_id', req.user.id)),
+      safeQuery(supabase.from('files').select('id, folder_id, size_bytes').eq('owner_id', userId).eq('is_deleted', false).eq('is_hidden', false))
     ]);
 
     // Helper to extract data
@@ -60,6 +83,8 @@ exports.getRecentItems = async (req, res, next) => {
 
     const allFiles = [...getSafeData(filesOpen), ...getSafeData(filesUpdate)];
     const allFolders = [...getSafeData(foldersOpen), ...getSafeData(foldersUpdate)];
+    const allUserFolders = getSafeData(allUserFoldersData);
+    const allUserFiles = getSafeData(allUserFilesData);
 
     // Deduplicate
     const uniqueFilesMap = new Map();
@@ -67,13 +92,10 @@ exports.getRecentItems = async (req, res, next) => {
     
     const uniqueFoldersMap = new Map();
     allFolders.forEach(f => {
-      // Calculate fileCount and totalSize for folders
-      if (f.files) {
-        const activeFiles = f.files.filter(file => !file.is_deleted);
-        f.fileCount = activeFiles.length;
-        f.totalSize = activeFiles.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
-        delete f.files;
-      }
+      const metrics = getFolderMetrics(f.id, allUserFolders || [], allUserFiles || []);
+      f.fileCount = metrics.fileCount;
+      f.folderCount = metrics.folderCount;
+      f.totalSize = metrics.totalSize;
       uniqueFoldersMap.set(f.id, f);
     });
 

@@ -15,7 +15,7 @@ const protect = async (req, res, next) => {
     // Check if user still exists
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, email, name, image_url')
+      .select('id, email, name, image_url, secret_code')
       .eq('id', decoded.id)
       .single();
 

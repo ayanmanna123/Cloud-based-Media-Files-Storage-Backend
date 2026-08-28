@@ -18,6 +18,7 @@ router.post('/passkeys/register-verify', protect, authController.verifyPasskeyRe
 router.post('/passkeys/login-options', authController.generatePasskeyLoginOptions);
 router.post('/passkeys/login-verify', authController.verifyPasskeyLogin);
 
+router.post('/secret-code', protect, authController.updateSecretCode);
 router.get('/me', protect, authController.getMe);
 
 module.exports = router;
