@@ -23,6 +23,49 @@ const getFolderMetrics = (folderId, allFolders, allFiles) => {
 
   return { fileCount, folderCount, totalSize };
 };
+
+const getFolderShareRole = async (folderId, userId) => {
+  let currentId = folderId;
+  let depth = 0;
+  
+  while (currentId && depth < 20) {
+    const { data: folder } = await supabase
+      .from('folders')
+      .select('owner_id, parent_id')
+      .eq('id', currentId)
+      .single();
+      
+    if (!folder) return null;
+    if (folder.owner_id === userId) return 'owner';
+    
+    // Check if directly shared
+    const { data: share } = await supabase
+      .from('shares')
+      .select('role')
+      .eq('resource_type', 'folder')
+      .eq('resource_id', currentId)
+      .eq('grantee_user_id', userId)
+      .single();
+      
+    if (share) return share.role; // 'editor' or 'viewer'
+    
+    currentId = folder.parent_id;
+    depth++;
+  }
+  
+  return null;
+};
+
+const checkFolderAccess = async (folderId, userId) => {
+  const role = await getFolderShareRole(folderId, userId);
+  return role !== null;
+};
+
+const checkFolderEditor = async (folderId, userId) => {
+  const role = await getFolderShareRole(folderId, userId);
+  return role === 'owner' || role === 'editor';
+};
+
 exports.createFolder = async (req, res, next) => {
   try {
     const { name, parentId } = req.body;
@@ -31,13 +74,30 @@ exports.createFolder = async (req, res, next) => {
       throw new AppError('Folder name is required', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
+    let folderOwnerId = req.user.id;
+    if (parentId) {
+      const parentRole = await getFolderShareRole(parentId, req.user.id);
+      if (parentRole !== 'owner' && parentRole !== 'editor') {
+        throw new AppError('Unauthorized to edit this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
+      
+      const { data: parentFolder } = await supabase
+        .from('folders')
+        .select('owner_id')
+        .eq('id', parentId)
+        .single();
+      if (parentFolder) {
+        folderOwnerId = parentFolder.owner_id;
+      }
+    }
+
     const { data, error } = await supabase
       .from('folders')
       .insert([
         {
           name,
           parent_id: parentId || null,
-          owner_id: req.user.id,
+          owner_id: folderOwnerId,
         },
       ])
       .select()
@@ -143,12 +203,17 @@ exports.getFolder = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    // Verify user has access to this folder (owner, or shared)
+    const hasAccess = await checkFolderAccess(id, req.user.id);
+    if (!hasAccess) {
+      throw new AppError('Folder not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
     // 1. Get the folder itself
     const { data: folder, error: folderError } = await supabase
       .from('folders')
       .select('*')
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .single();
 
@@ -156,17 +221,19 @@ exports.getFolder = async (req, res, next) => {
       throw new AppError('Folder not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
-    // Get all folders to compute subfolder count in memory
+    const ownerId = folder.owner_id;
+
+    // Get all folders of owner or requester to compute subfolder count in memory
     const { data: allUserFolders } = await supabase
       .from('folders')
       .select('id, parent_id, is_deleted, is_hidden')
-      .eq('owner_id', req.user.id);
+      .or(`owner_id.eq.${ownerId},owner_id.eq.${req.user.id}`);
 
-    // Fetch all active files for the user to compute recursive metrics
+    // Fetch all active files for the owner or requester to compute recursive metrics
     const { data: allUserFiles } = await supabase
       .from('files')
       .select('id, folder_id, size_bytes')
-      .eq('owner_id', req.user.id)
+      .or(`owner_id.eq.${ownerId},owner_id.eq.${req.user.id}`)
       .eq('is_deleted', false)
       .eq('is_hidden', false);
 
@@ -175,7 +242,6 @@ exports.getFolder = async (req, res, next) => {
       .from('folders')
       .select('*')
       .eq('parent_id', id)
-      .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .eq('is_hidden', false);
 
@@ -194,7 +260,6 @@ exports.getFolder = async (req, res, next) => {
       .from('files')
       .select('*')
       .eq('folder_id', id)
-      .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .eq('is_hidden', false);
 
@@ -223,6 +288,9 @@ exports.getFolder = async (req, res, next) => {
     // Add the current folder as the last item in the path
     path.push({ id: folder.id, name: folder.name });
 
+    const permission = folder.owner_id === req.user.id ? 'owner' : await getFolderShareRole(id, req.user.id);
+    folder.permission = permission;
+
     res.status(200).json({
       folder: keysToCamel(folder),
       children: {
@@ -241,6 +309,18 @@ exports.updateFolder = async (req, res, next) => {
     const { id } = req.params;
     const { name, parentId, isHidden } = req.body;
 
+    const isEditor = await checkFolderEditor(id, req.user.id);
+    if (!isEditor) {
+      throw new AppError('Folder not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
+    if (parentId) {
+      const parentRole = await getFolderShareRole(parentId, req.user.id);
+      if (parentRole !== 'owner' && parentRole !== 'editor') {
+        throw new AppError('Unauthorized to edit target folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
+    }
+
     const updates = {};
     if (name) updates.name = name;
     if (parentId !== undefined) updates.parent_id = parentId;
@@ -251,7 +331,6 @@ exports.updateFolder = async (req, res, next) => {
       .from('folders')
       .update(updates)
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .select()
       .single();
 
@@ -325,12 +404,16 @@ exports.deleteFolder = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    const isEditor = await checkFolderEditor(id, req.user.id);
+    if (!isEditor) {
+      throw new AppError('Folder not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
     // Soft delete
     const { data, error } = await supabase
       .from('folders')
       .update({ is_deleted: true, updated_at: new Date().toISOString() })
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .select()
       .single();
 

@@ -24,10 +24,6 @@ const limiter = rateLimit({
 initCronJobs();
 
 // Global Middlewares
-app.use(helmet({
-  crossOriginOpenerPolicy: false,
-}));
-app.use(limiter); // Apply rate limiting to all requests
 const allowedOrigins = ['http://localhost:5173', 'https://cloud-based-media-files-storage-fro.vercel.app'];
 app.use(cors({
   origin: function (origin, callback) {
@@ -39,6 +35,11 @@ app.use(cors({
   },
   credentials: true
 })); // Enable credentials for cookies
+
+app.use(helmet({
+  crossOriginOpenerPolicy: false,
+}));
+app.use(limiter); // Apply rate limiting to all requests
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());

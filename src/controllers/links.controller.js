@@ -112,17 +112,38 @@ exports.getLink = async (req, res, next) => {
     let folderFiles = [];
     
     if (link.resource_type === 'file') {
-      const { data: file } = await supabase.from('files').select('*').eq('id', link.resource_id).single();
+      const { data: file } = await supabase
+        .from('files')
+        .select('*')
+        .eq('id', link.resource_id)
+        .eq('is_deleted', false)
+        .eq('is_hidden', false)
+        .single();
       resourceData = file;
     } else if (link.resource_type === 'folder') {
-      const { data: folder } = await supabase.from('folders').select('*').eq('id', link.resource_id).single();
+      const { data: folder } = await supabase
+        .from('folders')
+        .select('*')
+        .eq('id', link.resource_id)
+        .eq('is_deleted', false)
+        .eq('is_hidden', false)
+        .single();
       resourceData = folder;
       
       // Fetch files inside the folder so the frontend can zip them
-      const { data: files } = await supabase.from('files').select('*').eq('folder_id', link.resource_id).eq('is_deleted', false);
+      const { data: files } = await supabase
+        .from('files')
+        .select('*')
+        .eq('folder_id', link.resource_id)
+        .eq('is_deleted', false)
+        .eq('is_hidden', false);
       if (files) {
         folderFiles = files;
       }
+    }
+
+    if (!resourceData) {
+      throw new AppError('Link not found or invalid', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
     res.status(200).json(keysToCamel({
@@ -227,11 +248,13 @@ exports.getBundleShare = async (req, res, next) => {
       }
     }
 
-    // Fetch all files in the bundle
+    // Fetch all active, non-hidden files in the bundle
     const { data: files } = await supabase
       .from('files')
       .select('*')
-      .in('id', bundle.file_ids);
+      .in('id', bundle.file_ids)
+      .eq('is_deleted', false)
+      .eq('is_hidden', false);
 
     res.status(200).json(keysToCamel({
       ...bundle,

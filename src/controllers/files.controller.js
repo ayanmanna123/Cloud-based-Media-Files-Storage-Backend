@@ -3,6 +3,102 @@ const imagekit = require('../config/imagekit');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 const crypto = require('crypto');
+const getFolderShareRole = async (folderId, userId) => {
+  let currentId = folderId;
+  let depth = 0;
+  
+  while (currentId && depth < 20) {
+    const { data: folder } = await supabase
+      .from('folders')
+      .select('owner_id, parent_id')
+      .eq('id', currentId)
+      .single();
+      
+    if (!folder) return null;
+    if (folder.owner_id === userId) return 'owner';
+    
+    // Check if directly shared
+    const { data: share } = await supabase
+      .from('shares')
+      .select('role')
+      .eq('resource_type', 'folder')
+      .eq('resource_id', currentId)
+      .eq('grantee_user_id', userId)
+      .single();
+      
+    if (share) return share.role; // 'editor' or 'viewer'
+    
+    currentId = folder.parent_id;
+    depth++;
+  }
+  
+  return null;
+};
+
+const checkFolderAccess = async (folderId, userId) => {
+  const role = await getFolderShareRole(folderId, userId);
+  return role !== null;
+};
+
+const checkFileAccess = async (fileId, userId) => {
+  const { data: file } = await supabase
+    .from('files')
+    .select('owner_id, folder_id')
+    .eq('id', fileId)
+    .single();
+
+  if (!file) return false;
+  if (file.owner_id === userId) return true;
+
+  // Check if directly shared
+  const { data: share } = await supabase
+    .from('shares')
+    .select('id')
+    .eq('resource_type', 'file')
+    .eq('resource_id', fileId)
+    .eq('grantee_user_id', userId)
+    .single();
+
+  if (share) return true;
+
+  // Check if parent folder is shared
+  if (file.folder_id) {
+    return await checkFolderAccess(file.folder_id, userId);
+  }
+
+  return false;
+};
+
+const checkFileEditor = async (fileId, userId) => {
+  const { data: file } = await supabase
+    .from('files')
+    .select('owner_id, folder_id')
+    .eq('id', fileId)
+    .single();
+
+  if (!file) return false;
+  if (file.owner_id === userId) return true;
+
+  // Check if directly shared with editor role
+  const { data: share } = await supabase
+    .from('shares')
+    .select('role')
+    .eq('resource_type', 'file')
+    .eq('resource_id', fileId)
+    .eq('grantee_user_id', userId)
+    .eq('role', 'editor')
+    .single();
+
+  if (share) return true;
+
+  // Check if parent folder is shared with editor role
+  if (file.folder_id) {
+    const folderRole = await getFolderShareRole(file.folder_id, userId);
+    return folderRole === 'owner' || folderRole === 'editor';
+  }
+
+  return false;
+};
 
 exports.initFileUpload = async (req, res, next) => {
   try {
@@ -10,6 +106,23 @@ exports.initFileUpload = async (req, res, next) => {
 
     if (!name || !mimeType || !sizeBytes) {
       throw new AppError('Missing required file metadata', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    let fileOwnerId = req.user.id;
+    if (folderId) {
+      const folderRole = await getFolderShareRole(folderId, req.user.id);
+      if (folderRole !== 'owner' && folderRole !== 'editor') {
+        throw new AppError('Unauthorized to edit this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
+      
+      const { data: parentFolder } = await supabase
+        .from('folders')
+        .select('owner_id')
+        .eq('id', folderId)
+        .single();
+      if (parentFolder) {
+        fileOwnerId = parentFolder.owner_id;
+      }
     }
 
     // Generate a unique storage key with strict sanitization (ImageKit replaces special chars with _)
@@ -56,7 +169,7 @@ exports.initFileUpload = async (req, res, next) => {
       let query = supabase
         .from('files')
         .select('id, name, owner_id')
-        .eq('owner_id', req.user.id)
+        .eq('owner_id', fileOwnerId)
         .eq('name', name)
         .eq('is_deleted', false);
         
@@ -72,7 +185,7 @@ exports.initFileUpload = async (req, res, next) => {
     }
     
     // We use the owner's ID for the storage key to keep files grouped by original owner
-    const storageOwnerId = existingFile ? existingFile.owner_id : req.user.id;
+    const storageOwnerId = existingFile ? existingFile.owner_id : fileOwnerId;
     const storageKey = `user_${storageOwnerId}/${uniqueId}_${sanitizedName}`;
     
     const existingFileId = existingFile ? existingFile.id : null;
@@ -90,7 +203,7 @@ exports.initFileUpload = async (req, res, next) => {
             mime_type: mimeType,
             size_bytes: sizeBytes,
             storage_key: storageKey,
-            owner_id: req.user.id,
+            owner_id: fileOwnerId,
             folder_id: folderId || null,
           }])
           .select()
@@ -219,11 +332,16 @@ exports.getFile = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    // Verify user has access to this file (owner, directly shared, or parent folder shared)
+    const hasAccess = await checkFileAccess(id, req.user.id);
+    if (!hasAccess) {
+      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    }
+
     const { data: file, error } = await supabase
       .from('files')
       .select('*')
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .single();
 
@@ -253,6 +371,18 @@ exports.updateFile = async (req, res, next) => {
     const { id } = req.params;
     const { name, folderId, isHidden } = req.body;
 
+    const isEditor = await checkFileEditor(id, req.user.id);
+    if (!isEditor) {
+      throw new AppError('File not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
+    if (folderId) {
+      const folderRole = await getFolderShareRole(folderId, req.user.id);
+      if (folderRole !== 'owner' && folderRole !== 'editor') {
+        throw new AppError('Unauthorized to edit target folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
+    }
+
     const updates = {};
     if (name) updates.name = name;
     if (folderId !== undefined) updates.folder_id = folderId;
@@ -263,7 +393,6 @@ exports.updateFile = async (req, res, next) => {
       .from('files')
       .update(updates)
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .select()
       .single();
 
@@ -283,12 +412,16 @@ exports.deleteFile = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    const isEditor = await checkFileEditor(id, req.user.id);
+    if (!isEditor) {
+      throw new AppError('File not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
     // Soft delete
     const { data, error } = await supabase
       .from('files')
       .update({ is_deleted: true, updated_at: new Date().toISOString() })
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .select()
       .single();
 

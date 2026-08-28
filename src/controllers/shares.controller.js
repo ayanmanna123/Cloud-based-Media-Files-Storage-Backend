@@ -3,6 +3,29 @@ const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 const { sendShareEmail } = require('../utils/email');
 
+const getFolderMetrics = (folderId, allFolders, allFiles) => {
+  const directSubfolders = allFolders.filter(f => f.parent_id === folderId && !f.is_deleted && !f.is_hidden);
+  
+  const getAllDescendantFolderIds = (id) => {
+    let ids = [];
+    const children = allFolders.filter(f => f.parent_id === id && !f.is_deleted && !f.is_hidden);
+    for (const child of children) {
+      ids.push(child.id);
+      ids = ids.concat(getAllDescendantFolderIds(child.id));
+    }
+    return ids;
+  };
+  
+  const allDescendantFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
+  const allNestedFiles = allFiles.filter(f => allDescendantFolderIds.includes(f.folder_id));
+  
+  const fileCount = allNestedFiles.length;
+  const totalSize = allNestedFiles.reduce((sum, f) => sum + (f.size_bytes || 0), 0);
+  const folderCount = directSubfolders.length;
+
+  return { fileCount, folderCount, totalSize };
+};
+
 exports.createShare = async (req, res, next) => {
   try {
     const { resourceType, resourceId, email, role, message } = req.body;
@@ -80,20 +103,49 @@ exports.getSharedWithMe = async (req, res, next) => {
     let files = [];
 
     if (folderIds.length > 0) {
-      const { data: f } = await supabase.from('folders').select('*').in('id', folderIds);
-      folders = (f || []).map(folder => {
-        const share = shares.find(s => s.resource_type === 'folder' && s.resource_id === folder.id);
-        return { 
-          ...folder, 
-          permission: share ? share.role : 'viewer',
-          ownerName: share?.created_by?.name || 'Unknown',
-          ownerEmail: share?.created_by?.email || 'Unknown'
-        };
-      });
+      const { data: f } = await supabase
+        .from('folders')
+        .select('*')
+        .in('id', folderIds)
+        .eq('is_deleted', false)
+        .eq('is_hidden', false);
+
+      const activeFolders = f || [];
+
+      if (activeFolders.length > 0) {
+        const ownerIds = [...new Set(activeFolders.map(folder => folder.owner_id))];
+        const [allFoldersRes, allFilesRes] = await Promise.all([
+          supabase.from('folders').select('id, parent_id, is_deleted, is_hidden').in('owner_id', ownerIds),
+          supabase.from('files').select('id, folder_id, size_bytes').in('owner_id', ownerIds).eq('is_deleted', false).eq('is_hidden', false)
+        ]);
+
+        const allFolders = allFoldersRes.data || [];
+        const allFiles = allFilesRes.data || [];
+
+        folders = activeFolders.map(folder => {
+          const share = shares.find(s => s.resource_type === 'folder' && s.resource_id === folder.id);
+          const metrics = getFolderMetrics(folder.id, allFolders, allFiles);
+          return { 
+            ...folder, 
+            permission: share ? share.role : 'viewer',
+            ownerName: share?.created_by?.name || 'Unknown',
+            ownerEmail: share?.created_by?.email || 'Unknown',
+            fileCount: metrics.fileCount,
+            folderCount: metrics.folderCount,
+            totalSize: metrics.totalSize
+          };
+        });
+      }
     }
     
     if (fileIds.length > 0) {
-      const { data: f } = await supabase.from('files').select('*').in('id', fileIds);
+      const { data: f } = await supabase
+        .from('files')
+        .select('*')
+        .in('id', fileIds)
+        .eq('is_deleted', false)
+        .eq('is_hidden', false);
+
       files = (f || []).map(file => {
         const share = shares.find(s => s.resource_type === 'file' && s.resource_id === file.id);
         return { 
