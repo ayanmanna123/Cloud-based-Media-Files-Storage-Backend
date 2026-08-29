@@ -432,7 +432,35 @@ exports.updateFile = async (req, res, next) => {
     let data = null;
     if (name || folderId !== undefined) {
       const updates = {};
-      if (name) updates.name = name;
+      if (name) {
+        // Fetch current file name to preserve original file extension
+        const { data: existingFile } = await supabase
+          .from('files')
+          .select('name')
+          .eq('id', id)
+          .single();
+
+        if (existingFile && existingFile.name) {
+          const lastDotIdx = existingFile.name.lastIndexOf('.');
+          if (lastDotIdx > 0 && lastDotIdx < existingFile.name.length - 1) {
+            const originalExt = existingFile.name.slice(lastDotIdx); // e.g. ".pdf"
+            let sanitizedBase = name.trim();
+            if (sanitizedBase.toLowerCase().endsWith(originalExt.toLowerCase())) {
+              updates.name = sanitizedBase;
+            } else {
+              const newLastDot = sanitizedBase.lastIndexOf('.');
+              if (newLastDot > 0) {
+                sanitizedBase = sanitizedBase.slice(0, newLastDot);
+              }
+              updates.name = `${sanitizedBase}${originalExt}`;
+            }
+          } else {
+            updates.name = name.trim();
+          }
+        } else {
+          updates.name = name.trim();
+        }
+      }
       if (folderId !== undefined) updates.folder_id = folderId;
       updates.updated_at = new Date().toISOString();
 
