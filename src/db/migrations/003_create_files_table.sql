@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS public.files (
     checksum TEXT,
     is_deleted BOOLEAN DEFAULT FALSE,
     is_hidden BOOLEAN DEFAULT FALSE,
+    is_encrypted BOOLEAN DEFAULT FALSE,
+    encryption_iv TEXT,
+    encryption_tag TEXT,
+    encryption_algo VARCHAR(32) DEFAULT 'AES-256-GCM',
     last_opened_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()

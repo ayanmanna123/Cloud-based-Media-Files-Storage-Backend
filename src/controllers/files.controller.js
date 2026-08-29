@@ -117,7 +117,7 @@ const checkFileEditor = async (fileId, userId) => {
 
 exports.initFileUpload = async (req, res, next) => {
   try {
-    const { name, mimeType, sizeBytes, folderId, targetFileId } = req.body;
+    const { name, mimeType, sizeBytes, folderId, targetFileId, isEncrypted, encryptionIv } = req.body;
 
     if (!name || !mimeType || !sizeBytes) {
       throw new AppError('Missing required file metadata', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
@@ -174,8 +174,6 @@ exports.initFileUpload = async (req, res, next) => {
           if (shareData) {
             existingFile = fileData;
           } else {
-            // Might be a folder share granting permission, but for simplicity we rely on file share here. 
-            // Better to throw if unauthorized, but to match original logic, let it proceed to create new if not found.
             throw new AppError('Unauthorized to edit this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
           }
         }
@@ -211,18 +209,40 @@ exports.initFileUpload = async (req, res, next) => {
         fileId = existingFileId;
         isNewVersion = true;
     } else {
-        const { data: newFile, error } = await supabase
+        const insertPayload = {
+          name,
+          mime_type: mimeType,
+          size_bytes: sizeBytes,
+          storage_key: storageKey,
+          owner_id: fileOwnerId,
+          folder_id: folderId || null,
+        };
+        if (isEncrypted !== undefined) {
+          insertPayload.is_encrypted = isEncrypted;
+        }
+        if (encryptionIv) {
+          insertPayload.encryption_iv = encryptionIv;
+        }
+
+        let { data: newFile, error } = await supabase
           .from('files')
-          .insert([{
-            name,
-            mime_type: mimeType,
-            size_bytes: sizeBytes,
-            storage_key: storageKey,
-            owner_id: fileOwnerId,
-            folder_id: folderId || null,
-          }])
+          .insert([insertPayload])
           .select()
           .single();
+
+        if (error) {
+          if (error.message && (error.message.includes('is_encrypted') || error.message.includes('column') || error.message.includes('schema cache'))) {
+            delete insertPayload.is_encrypted;
+            delete insertPayload.encryption_iv;
+            const retry = await supabase
+              .from('files')
+              .insert([insertPayload])
+              .select()
+              .single();
+            newFile = retry.data;
+            error = retry.error;
+          }
+        }
 
         if (error) {
           throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
@@ -249,7 +269,7 @@ exports.initFileUpload = async (req, res, next) => {
 
 exports.completeFileUpload = async (req, res, next) => {
   try {
-    const { fileId, isNewVersion, storageKey, sizeBytes } = req.body;
+    const { fileId, isNewVersion, storageKey, sizeBytes, isEncrypted, encryptionIv } = req.body;
     
     // Verify file exists and user has permission
     const { data: file, error: fileError } = await supabase
@@ -267,6 +287,30 @@ exports.completeFileUpload = async (req, res, next) => {
     if (!isEditor) {
       throw new AppError('Unauthorized to update this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
     }
+
+    const updates = {
+      storage_key: storageKey,
+      size_bytes: sizeBytes,
+      updated_at: new Date().toISOString()
+    };
+    if (isEncrypted !== undefined) updates.is_encrypted = isEncrypted;
+    if (encryptionIv) updates.encryption_iv = encryptionIv;
+
+    const performUpdate = async (updateObj) => {
+      const { error: updateErr } = await supabase
+        .from('files')
+        .update(updateObj)
+        .eq('id', file.id);
+      
+      if (updateErr && (updateErr.message.includes('is_encrypted') || updateErr.message.includes('column') || updateErr.message.includes('schema cache'))) {
+        delete updateObj.is_encrypted;
+        delete updateObj.encryption_iv;
+        await supabase
+          .from('files')
+          .update(updateObj)
+          .eq('id', file.id);
+      }
+    };
 
     if (isNewVersion) {
       // Get all version numbers for this file
@@ -308,15 +352,8 @@ exports.completeFileUpload = async (req, res, next) => {
         throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
       }
 
-      await supabase
-        .from('files')
-        .update({ 
-          version_id: newVersion.id,
-          storage_key: storageKey,
-          size_bytes: sizeBytes,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', file.id);
+      updates.version_id = newVersion.id;
+      await performUpdate(updates);
 
     } else {
       // Create initial file version
@@ -335,10 +372,8 @@ exports.completeFileUpload = async (req, res, next) => {
         throw new AppError(versionError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
       }
 
-      await supabase
-        .from('files')
-        .update({ version_id: version.id })
-        .eq('id', file.id);
+      updates.version_id = version.id;
+      await performUpdate(updates);
     }
 
     res.status(200).json({ status: 'success', message: 'Upload completed' });
