@@ -393,8 +393,8 @@ exports.getMe = async (req, res, next) => {
       }, 0);
     }
 
-    // Default storage limit: 100 GB
-    const storageLimit = 100 * 1024 * 1024 * 1024;
+    // Default storage limit: 1 GB
+    const storageLimit = 1 * 1024 * 1024 * 1024;
 
     res.status(200).json({
       user: {
