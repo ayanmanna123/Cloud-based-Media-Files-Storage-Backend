@@ -26,6 +26,20 @@ const getFolderMetrics = (folderId, allFolders, allFiles) => {
 };
 
 const getFolderShareRole = async (folderId, userId) => {
+  if (!folderId || !userId) return null;
+
+  try {
+    const { data, error } = await supabase.rpc('get_folder_share_role', {
+      target_folder_id: folderId,
+      target_user_id: userId
+    });
+    if (!error && data !== undefined) {
+      return data;
+    }
+  } catch (rpcErr) {
+    // Fallback to sequential traversal if RPC is not present in database
+  }
+
   let currentId = folderId;
   let depth = 0;
   
