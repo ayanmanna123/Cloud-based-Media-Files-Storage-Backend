@@ -5,7 +5,18 @@ const getFrontendUrl = () => {
     ? 'https://cloud-based-media-files-storage-fro.vercel.app' 
     : 'http://localhost:5173';
 };
-// Reuse a single transporter for Ethereal email
+
+const getSender = () => {
+  if (process.env.EMAIL_FROM) {
+    return process.env.EMAIL_FROM;
+  }
+  if (process.env.EMAIL_USER) {
+    return `"CloudBox" <${process.env.EMAIL_USER}>`;
+  }
+  return '"CloudBox" <no-reply@cloudbox.app>';
+};
+
+// Reuse a single transporter for email
 let transporter;
 
 const createTransporter = async () => {
@@ -13,7 +24,7 @@ const createTransporter = async () => {
 
   transporter = nodemailer.createTransport({
     host: process.env.EMAIL_HOST || "smtp.ethereal.email",
-    port: process.env.EMAIL_PORT || 587,
+    port: parseInt(process.env.EMAIL_PORT || "587", 10),
     secure: process.env.EMAIL_SECURE === 'true', 
     auth: {
       user: process.env.EMAIL_USER,
@@ -30,10 +41,15 @@ const sendVerificationEmail = async (email, verificationToken) => {
   const verifyUrl = `${getFrontendUrl()}/verify?token=${verificationToken}`;
 
   const mailOptions = {
-    from: '"CloudBox Admin" <admin@cloudbox.local>', // sender address
+    from: getSender(), // sender address
     to: email, // list of receivers
     subject: "Verify your Email - CloudBox", // Subject line
     text: `Welcome to CloudBox! Please verify your email by clicking on the following link: ${verifyUrl}`, // plain text body
+    headers: {
+      'X-Priority': '3',
+      'X-MSMail-Priority': 'Normal',
+      'Importance': 'Normal'
+    },
     html: `
       <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 40px 0; width: 100%;">
         <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden;">
@@ -72,10 +88,15 @@ const sendPasswordResetEmail = async (email, resetToken) => {
   const resetUrl = `${getFrontendUrl()}/reset-password?token=${resetToken}`;
 
   const mailOptions = {
-    from: '"CloudBox Admin" <admin@cloudbox.local>',
+    from: getSender(),
     to: email,
     subject: "Password Reset Request - CloudBox",
     text: `You requested a password reset. Click the link to reset your password: ${resetUrl}`,
+    headers: {
+      'X-Priority': '3',
+      'X-MSMail-Priority': 'Normal',
+      'Importance': 'Normal'
+    },
     html: `
       <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 40px 0; width: 100%;">
         <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden;">
@@ -113,10 +134,15 @@ const sendShareEmail = async (email, sharerName, resourceName, role, message) =>
   const dashboardUrl = `${getFrontendUrl()}/dashboard`;
 
   const mailOptions = {
-    from: '"CloudBox Admin" <admin@cloudbox.local>',
+    from: getSender(),
     to: email,
     subject: `${sharerName} shared "${resourceName}" with you - CloudBox`,
     text: `${sharerName} has shared a file/folder with you on CloudBox.\n\n${message ? `Message: "${message}"\n\n` : ''}Role: ${role}\n\nView it here: ${dashboardUrl}`,
+    headers: {
+      'X-Priority': '3',
+      'X-MSMail-Priority': 'Normal',
+      'Importance': 'Normal'
+    },
     html: `
       <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 40px 0; width: 100%;">
         <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden;">
