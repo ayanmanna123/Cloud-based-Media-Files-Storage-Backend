@@ -35,6 +35,8 @@ exports.createShare = async (req, res, next) => {
       throw new AppError('Missing required share parameters', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
+    let resourceName = '';
+
     // Lookup grantee user by email
     const { data: granteeUser, error: userError } = await supabase
       .from('users')
@@ -85,7 +87,8 @@ exports.createShare = async (req, res, next) => {
     }
 
     // Send email notification (non-blocking)
-    sendShareEmail(email, sharer?.name || 'Someone', resourceName, role, message).catch(console.error);
+    const sharerName = req.user?.name || req.user?.email || 'Someone';
+    sendShareEmail(email, sharerName, resourceName, role, message).catch(console.error);
 
     res.status(201).json(keysToCamel(data));
   } catch (error) {
