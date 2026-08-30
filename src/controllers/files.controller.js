@@ -696,12 +696,17 @@ exports.copyFile = async (req, res, next) => {
     const { id } = req.params;
     const { folderId } = req.body; // target folder id
 
-    // Verify ownership and get file
+    // Verify user has access to this file (owner, editor, or viewer)
+    const hasAccess = await checkFileAccess(id, req.user.id);
+    if (!hasAccess) {
+      throw new AppError('File not found or unauthorized', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+    }
+
+    // Get source file details
     const { data: file, error: fileError } = await supabase
       .from('files')
       .select('*')
       .eq('id', id)
-      .eq('owner_id', req.user.id)
       .eq('is_deleted', false)
       .single();
 
@@ -709,15 +714,24 @@ exports.copyFile = async (req, res, next) => {
       throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
-    // Check for name collision in target folder
+    // Determine target folder: verify user can write to target folder if provided, else copy to root
+    let targetFolderId = null;
+    if (folderId) {
+      const folderRole = await getFolderShareRole(folderId, req.user.id);
+      if (folderRole === 'owner' || folderRole === 'editor') {
+        targetFolderId = folderId;
+      }
+    }
+
+    // Check for name collision in target location for current user
     let query = supabase
       .from('files')
       .select('name')
       .eq('owner_id', req.user.id)
       .eq('is_deleted', false);
       
-    if (folderId) {
-      query = query.eq('folder_id', folderId);
+    if (targetFolderId) {
+      query = query.eq('folder_id', targetFolderId);
     } else {
       query = query.is('folder_id', null);
     }
@@ -725,33 +739,97 @@ exports.copyFile = async (req, res, next) => {
     const { data: existingFiles } = await query;
     const existingNames = new Set((existingFiles || []).map(f => f.name));
 
-    let newName = file.name;
-    let counter = 1;
+    const extIndex = file.name.lastIndexOf('.');
+    let namePart = file.name;
+    let extPart = '';
+    if (extIndex > -1) {
+      namePart = file.name.substring(0, extIndex);
+      extPart = file.name.substring(extIndex);
+    }
+
+    let newName = `Copy of ${file.name}`;
+    let counter = 2;
     while (existingNames.has(newName)) {
-      const extIndex = file.name.lastIndexOf('.');
-      if (extIndex > -1) {
-        const namePart = file.name.substring(0, extIndex);
-        const extPart = file.name.substring(extIndex);
-        newName = `${namePart} (Copy ${counter})${extPart}`;
-      } else {
-        newName = `${file.name} (Copy ${counter})`;
-      }
+      newName = `Copy (${counter}) of ${namePart}${extPart}`;
       counter++;
     }
 
-    // Insert new file record pointing to the same storage_key
-    const { data: newFile, error: insertError } = await supabase
+    // Create a new independent storage key
+    const uniqueId = crypto.randomUUID();
+    const sanitizedName = newName.replace(/[^a-zA-Z0-9.\-]/g, '_');
+    const newStorageKey = `user_${req.user.id}/${uniqueId}_${sanitizedName}`;
+
+    // Duplicate physical asset in ImageKit storage so it is a completely independent entity
+    try {
+      const rawPath = file.storage_key.startsWith('/') ? file.storage_key : '/' + file.storage_key;
+      const signedUrl = imagekit.url({
+        path: rawPath,
+        signed: true,
+        expireSeconds: 3600,
+      });
+
+      let fileBuffer = null;
+      try {
+        const fetchRes = await fetch(signedUrl);
+        if (fetchRes.ok) {
+          const ab = await fetchRes.arrayBuffer();
+          fileBuffer = Buffer.from(ab);
+        }
+      } catch (fetchErr) {
+        console.warn('Fetch signedUrl for copy warning:', fetchErr.message);
+      }
+
+      const filePayload = fileBuffer || signedUrl;
+      const targetFileName = newStorageKey.split('/').pop();
+      const targetFolder = '/' + (newStorageKey.includes('/') ? newStorageKey.split('/')[0] : '');
+
+      await new Promise((resolve) => {
+        imagekit.upload({
+          file: filePayload,
+          fileName: targetFileName,
+          folder: targetFolder,
+          useUniqueFileName: false
+        }, (err, result) => {
+          if (err) console.warn('ImageKit duplicate upload warning:', err.message || err);
+          resolve(result);
+        });
+      });
+    } catch (storageErr) {
+      console.warn('Storage copy warning:', storageErr.message || storageErr);
+    }
+
+    // Insert new independent file record owned by req.user.id
+    const insertPayload = {
+      name: newName,
+      mime_type: file.mime_type,
+      size_bytes: file.size_bytes,
+      storage_key: newStorageKey,
+      owner_id: req.user.id,
+      folder_id: targetFolderId,
+    };
+
+    if (file.is_encrypted !== undefined) insertPayload.is_encrypted = file.is_encrypted;
+    if (file.encryption_iv) insertPayload.encryption_iv = file.encryption_iv;
+
+    let { data: newFile, error: insertError } = await supabase
       .from('files')
-      .insert([{
-        name: newName,
-        mime_type: file.mime_type,
-        size_bytes: file.size_bytes,
-        storage_key: file.storage_key,
-        owner_id: req.user.id,
-        folder_id: folderId || null,
-      }])
+      .insert([insertPayload])
       .select()
       .single();
+
+    if (insertError) {
+      if (insertError.message && (insertError.message.includes('is_encrypted') || insertError.message.includes('column'))) {
+        delete insertPayload.is_encrypted;
+        delete insertPayload.encryption_iv;
+        const retry = await supabase
+          .from('files')
+          .insert([insertPayload])
+          .select()
+          .single();
+        newFile = retry.data;
+        insertError = retry.error;
+      }
+    }
 
     if (insertError) {
       throw new AppError(insertError.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
@@ -763,7 +841,7 @@ exports.copyFile = async (req, res, next) => {
       .insert([{
         file_id: newFile.id,
         version_number: 1,
-        storage_key: file.storage_key,
+        storage_key: newStorageKey,
         size_bytes: file.size_bytes,
       }])
       .select('id')
@@ -774,6 +852,7 @@ exports.copyFile = async (req, res, next) => {
         .from('files')
         .update({ version_id: version.id })
         .eq('id', newFile.id);
+      newFile.version_id = version.id;
     }
 
     res.status(200).json(keysToCamel(newFile));
