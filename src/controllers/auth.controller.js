@@ -15,20 +15,39 @@ const {
 const rpName = 'Cloud Based Media Storage';
 
 const getRpIdAndOrigin = (req) => {
-  let reqHost = req.get('host') || 'localhost';
-  let hostname = reqHost.split(':')[0]; // Remove port number if present
+  if (process.env.RP_ID) {
+    const rawOrigin = process.env.CLIENT_URL || req.get('origin') || (req.get('referer') ? new URL(req.get('referer')).origin : null) || `http://${process.env.RP_ID}:5173`;
+    return { rpID: process.env.RP_ID, origin: rawOrigin };
+  }
 
-  const effectiveRpID = process.env.RP_ID || hostname;
-  
-  let reqOrigin = req.get('origin');
-  if (!reqOrigin && req.get('referer')) {
+  let rawClientUrl = req.get('origin');
+  if (!rawClientUrl && req.get('referer')) {
     try {
-      reqOrigin = new URL(req.get('referer')).origin;
+      rawClientUrl = new URL(req.get('referer')).origin;
     } catch (e) {}
   }
-  const effectiveOrigin = process.env.CLIENT_URL || reqOrigin || `http://${hostname}:5173`;
+  if (!rawClientUrl && process.env.CLIENT_URL) {
+    rawClientUrl = process.env.CLIENT_URL;
+  }
 
-  return { rpID: effectiveRpID, origin: effectiveOrigin };
+  let hostname = 'localhost';
+  let fullOrigin = 'http://localhost:5173';
+
+  if (rawClientUrl) {
+    try {
+      const parsedUrl = new URL(rawClientUrl);
+      hostname = parsedUrl.hostname;
+      fullOrigin = parsedUrl.origin;
+    } catch (e) {
+      console.error("Failed to parse client URL:", e);
+    }
+  } else {
+    const hostHeader = req.get('host') || 'localhost';
+    hostname = hostHeader.split(':')[0];
+    fullOrigin = `http://${hostname}:5173`;
+  }
+
+  return { rpID: hostname, origin: fullOrigin };
 };
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
