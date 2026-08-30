@@ -13,9 +13,23 @@ const {
 } = require('@simplewebauthn/server');
 
 const rpName = 'Cloud Based Media Storage';
-// For local development
-const rpID = process.env.RP_ID || 'localhost';
-const origin = process.env.CLIENT_URL || `http://${rpID}:5173`;
+
+const getRpIdAndOrigin = (req) => {
+  let reqHost = req.get('host') || 'localhost';
+  let hostname = reqHost.split(':')[0]; // Remove port number if present
+
+  const effectiveRpID = process.env.RP_ID || hostname;
+  
+  let reqOrigin = req.get('origin');
+  if (!reqOrigin && req.get('referer')) {
+    try {
+      reqOrigin = new URL(req.get('referer')).origin;
+    } catch (e) {}
+  }
+  const effectiveOrigin = process.env.CLIENT_URL || reqOrigin || `http://${hostname}:5173`;
+
+  return { rpID: effectiveRpID, origin: effectiveOrigin };
+};
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -439,6 +453,7 @@ exports.updateSecretCode = async (req, res, next) => {
 exports.generatePasskeyRegistrationOptions = async (req, res, next) => {
   try {
     const user = req.user;
+    const { rpID } = getRpIdAndOrigin(req);
 
     const options = await generateRegistrationOptions({
       rpName,
@@ -465,6 +480,7 @@ exports.verifyPasskeyRegistration = async (req, res, next) => {
   try {
     const user = req.user;
     const body = req.body;
+    const { rpID, origin } = getRpIdAndOrigin(req);
 
     const { data: dbUser } = await supabase.from('users').select('current_challenge').eq('id', user.id).single();
     if (!dbUser || !dbUser.current_challenge) {
@@ -511,6 +527,7 @@ exports.verifyPasskeyRegistration = async (req, res, next) => {
 exports.generatePasskeyLoginOptions = async (req, res, next) => {
   try {
     const { email } = req.body;
+    const { rpID } = getRpIdAndOrigin(req);
 
     let user;
     if (email) {
@@ -559,6 +576,7 @@ exports.generatePasskeyLoginOptions = async (req, res, next) => {
 exports.verifyPasskeyLogin = async (req, res, next) => {
   try {
     const { email, response } = req.body;
+    const { rpID, origin } = getRpIdAndOrigin(req);
     let challenge = req.cookies.passkey_challenge;
 
     let user;

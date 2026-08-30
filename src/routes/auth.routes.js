@@ -13,10 +13,10 @@ router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 
 // Passkey Routes
-router.get('/passkeys/register-options', protect, authController.generatePasskeyRegistrationOptions);
-router.post('/passkeys/register-verify', protect, authController.verifyPasskeyRegistration);
-router.post('/passkeys/login-options', authController.generatePasskeyLoginOptions);
-router.post('/passkeys/login-verify', authController.verifyPasskeyLogin);
+router.get(['/passkeys/register-options', '/passkey/register-options'], protect, authController.generatePasskeyRegistrationOptions);
+router.post(['/passkeys/register-verify', '/passkey/register-verify'], protect, authController.verifyPasskeyRegistration);
+router.post(['/passkeys/login-options', '/passkey/login-options'], authController.generatePasskeyLoginOptions);
+router.post(['/passkeys/login-verify', '/passkey/login-verify'], authController.verifyPasskeyLogin);
 
 router.post('/secret-code', protect, authController.updateSecretCode);
 router.get('/me', protect, authController.getMe);
