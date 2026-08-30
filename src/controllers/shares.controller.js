@@ -86,9 +86,13 @@ exports.createShare = async (req, res, next) => {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
-    // Send email notification (non-blocking)
+    // Send email notification (await for Serverless compatibility)
     const sharerName = req.user?.name || req.user?.email || 'Someone';
-    sendShareEmail(email, sharerName, resourceName, role, message).catch(console.error);
+    try {
+      await sendShareEmail(email, sharerName, resourceName, role, message);
+    } catch (emailErr) {
+      console.error("Share email send error:", emailErr);
+    }
 
     res.status(201).json(keysToCamel(data));
   } catch (error) {

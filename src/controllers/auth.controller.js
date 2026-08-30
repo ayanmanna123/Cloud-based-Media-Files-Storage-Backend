@@ -129,8 +129,12 @@ exports.register = async (req, res, next) => {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
-    // 4. Send Verification Email (non-blocking)
-    sendVerificationEmail(email, verificationToken).catch(err => console.error("Verification email error:", err));
+    // 4. Send Verification Email (await for Serverless compatibility)
+    try {
+      await sendVerificationEmail(email, verificationToken);
+    } catch (emailErr) {
+      console.error("Verification email send error:", emailErr);
+    }
 
     res.status(201).json({
       status: 'success',
@@ -340,8 +344,12 @@ exports.forgotPassword = async (req, res, next) => {
       throw new AppError('Failed to process password reset', ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
-    // 4. Send Email (non-blocking)
-    sendPasswordResetEmail(email, resetToken).catch(err => console.error("Password reset email error:", err));
+    // 4. Send Email (await for Serverless compatibility)
+    try {
+      await sendPasswordResetEmail(email, resetToken);
+    } catch (emailErr) {
+      console.error("Password reset email error:", emailErr);
+    }
 
     res.status(200).json({ status: 'success', message: 'If that email exists, a reset link was sent.' });
   } catch (error) {
