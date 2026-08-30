@@ -143,11 +143,34 @@ exports.getLink = async (req, res, next) => {
       throw new AppError('Link not found or invalid', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
 
+    let savedToSharedWithMe = false;
+    if (req.user && resourceData) {
+      const resourceOwnerId = resourceData.owner_id || link.created_by;
+      if (req.user.id !== resourceOwnerId) {
+        const { error: shareErr } = await supabase
+          .from('shares')
+          .insert([
+            {
+              resource_type: link.resource_type,
+              resource_id: link.resource_id,
+              grantee_user_id: req.user.id,
+              role: link.role || 'viewer',
+              created_by: resourceOwnerId
+            }
+          ]);
+
+        if (!shareErr || shareErr.code === '23505') {
+          savedToSharedWithMe = true;
+        }
+      }
+    }
+
     res.status(200).json(keysToCamel({
       ...link,
       password_hash: undefined, // ensure we don't leak hash
       resource: resourceData,
-      files: folderFiles // return files so frontend can zip
+      files: folderFiles, // return files so frontend can zip
+      savedToSharedWithMe
     }));
   } catch (error) {
     next(error);
@@ -253,10 +276,34 @@ exports.getBundleShare = async (req, res, next) => {
       .eq('is_deleted', false)
       .eq('is_hidden', false);
 
+    let savedToSharedWithMe = false;
+    if (req.user && files && files.length > 0) {
+      for (const file of files) {
+        const fileOwnerId = file.owner_id || bundle.created_by;
+        if (req.user.id !== fileOwnerId) {
+          const { error: shareErr } = await supabase
+            .from('shares')
+            .insert([
+              {
+                resource_type: 'file',
+                resource_id: file.id,
+                grantee_user_id: req.user.id,
+                role: 'viewer',
+                created_by: fileOwnerId
+              }
+            ]);
+          if (!shareErr || shareErr.code === '23505') {
+            savedToSharedWithMe = true;
+          }
+        }
+      }
+    }
+
     res.status(200).json(keysToCamel({
       ...bundle,
       password_hash: undefined,
-      files: files || []
+      files: files || [],
+      savedToSharedWithMe
     }));
   } catch (error) {
     next(error);

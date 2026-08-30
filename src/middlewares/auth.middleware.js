@@ -36,4 +36,27 @@ const protect = async (req, res, next) => {
   }
 };
 
-module.exports = { protect };
+const optionalAuth = async (req, res, next) => {
+  try {
+    const token = req.cookies.jwt;
+    if (!token) {
+      return next();
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, email, name, image_url, secret_code')
+      .eq('id', decoded.id)
+      .single();
+
+    if (!error && user) {
+      req.user = user;
+    }
+    next();
+  } catch (error) {
+    next();
+  }
+};
+
+module.exports = { protect, optionalAuth };
+
