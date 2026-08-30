@@ -498,7 +498,7 @@ exports.generatePasskeyRegistrationOptions = async (req, res, next) => {
 exports.verifyPasskeyRegistration = async (req, res, next) => {
   try {
     const user = req.user;
-    const body = req.body;
+    const authResponse = req.body.response || req.body.body || req.body;
     const { rpID, origin } = getRpIdAndOrigin(req);
 
     const { data: dbUser } = await supabase.from('users').select('current_challenge').eq('id', user.id).single();
@@ -507,7 +507,7 @@ exports.verifyPasskeyRegistration = async (req, res, next) => {
     }
 
     const verification = await verifyRegistrationResponse({
-      response: body,
+      response: authResponse,
       expectedChallenge: dbUser.current_challenge,
       expectedOrigin: origin,
       expectedRPID: rpID,
@@ -594,7 +594,13 @@ exports.generatePasskeyLoginOptions = async (req, res, next) => {
 
 exports.verifyPasskeyLogin = async (req, res, next) => {
   try {
-    const { email, response } = req.body;
+    const { email } = req.body;
+    const authResponse = req.body.response || req.body.body || req.body;
+
+    if (!authResponse || !authResponse.id) {
+      throw new AppError('Invalid passkey response payload', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
     const { rpID, origin } = getRpIdAndOrigin(req);
     let challenge = req.cookies.passkey_challenge;
 
@@ -613,7 +619,7 @@ exports.verifyPasskeyLogin = async (req, res, next) => {
     }
 
     // Find passkey by credential id
-    const { data: passkey } = await supabase.from('passkeys').select('*').eq('credential_id', response.id).single();
+    const { data: passkey } = await supabase.from('passkeys').select('*').eq('credential_id', authResponse.id).single();
 
     if (!passkey) {
        throw new AppError('Passkey not found', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
@@ -624,11 +630,11 @@ exports.verifyPasskeyLogin = async (req, res, next) => {
        const { data } = await supabase.from('users').select('*').eq('id', passkey.user_id).single();
        if (!data) throw new AppError('User not found', ERROR_CODES.UNAUTHORIZED.status, ERROR_CODES.UNAUTHORIZED.code);
        user = data;
-       // Challenge in cookie since we didn't know user earlier
+       challenge = user.current_challenge || req.cookies.passkey_challenge;
     }
 
     const verification = await verifyAuthenticationResponse({
-      response,
+      response: authResponse,
       expectedChallenge: challenge,
       expectedOrigin: origin,
       expectedRPID: rpID,
