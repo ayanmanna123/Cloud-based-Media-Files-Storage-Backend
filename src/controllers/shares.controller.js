@@ -47,14 +47,19 @@ exports.createShare = async (req, res, next) => {
     }
 
     // Fetch the resource name and sharer name for the email
-    const { data: sharer } = await supabase.from('users').select('name').eq('id', req.user.id).single();
-    let resourceName = 'a file';
+    // Verify that req.user.id is the owner of the resource
     if (resourceType === 'folder') {
-      const { data: f } = await supabase.from('folders').select('name').eq('id', resourceId).single();
-      if (f) resourceName = f.name;
+      const { data: f } = await supabase.from('folders').select('name, owner_id').eq('id', resourceId).single();
+      if (!f || f.owner_id !== req.user.id) {
+        throw new AppError('Only the owner can share this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
+      resourceName = f.name;
     } else {
-      const { data: f } = await supabase.from('files').select('name').eq('id', resourceId).single();
-      if (f) resourceName = f.name;
+      const { data: f } = await supabase.from('files').select('name, owner_id').eq('id', resourceId).single();
+      if (!f || f.owner_id !== req.user.id) {
+        throw new AppError('Only the owner can share this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
+      resourceName = f.name;
     }
 
     // Insert share

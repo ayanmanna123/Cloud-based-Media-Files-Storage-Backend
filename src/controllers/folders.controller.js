@@ -369,6 +369,10 @@ exports.updateFolder = async (req, res, next) => {
     }
 
     if (parentId) {
+      const { data: sourceFolder } = await supabase.from('folders').select('owner_id').eq('id', id).single();
+      if (!sourceFolder || sourceFolder.owner_id !== req.user.id) {
+        throw new AppError('Only the folder owner can move folders', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
       const parentRole = await getFolderShareRole(parentId, req.user.id);
       if (parentRole !== 'owner' && parentRole !== 'editor') {
         throw new AppError('Unauthorized to edit target folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);

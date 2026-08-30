@@ -438,6 +438,10 @@ exports.updateFile = async (req, res, next) => {
     }
 
     if (folderId) {
+      const { data: sourceFile } = await supabase.from('files').select('owner_id').eq('id', id).single();
+      if (!sourceFile || sourceFile.owner_id !== req.user.id) {
+        throw new AppError('Only the file owner can move files', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+      }
       const folderRole = await getFolderShareRole(folderId, req.user.id);
       if (folderRole !== 'owner' && folderRole !== 'editor') {
         throw new AppError('Unauthorized to edit target folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
@@ -566,10 +570,10 @@ exports.getFileVersions = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Verify user has access to this file (owner, directly shared, or parent folder shared)
-    const hasAccess = await checkFileAccess(id, req.user.id);
-    if (!hasAccess) {
-      throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
+    // Verify user has editor or owner access to view version history
+    const isEditor = await checkFileEditor(id, req.user.id);
+    if (!isEditor) {
+      throw new AppError('File not found or unauthorized to view version history', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
     }
 
     const { data: file } = await supabase
