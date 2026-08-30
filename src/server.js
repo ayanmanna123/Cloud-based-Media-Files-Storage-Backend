@@ -11,12 +11,16 @@ const routes = require('./routes');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Enable 'trust proxy' for Vercel/Render reverse proxies
+app.set('trust proxy', 1);
+
 // Rate limiting middleware
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   limit: 200, // Limit each IP to 200 requests per `window` (here, per 15 minutes).
   standardHeaders: 'draft-7', // draft-6: `RateLimit-*` headers; draft-7: combined `RateLimit` header
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers.
+  validate: { xForwardedForHeader: false },
   message: { error: { code: 'TOO_MANY_REQUESTS', message: 'Too many requests, please try again later.' } }
 });
 
