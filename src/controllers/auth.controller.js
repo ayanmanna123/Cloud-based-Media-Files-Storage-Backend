@@ -50,6 +50,15 @@ const getRpIdAndOrigin = (req) => {
   return { rpID: hostname, origin: fullOrigin };
 };
 
+const extractPasskeyPayload = (reqBody) => {
+  if (!reqBody) return null;
+  if (reqBody.id && (reqBody.rawId || reqBody.type)) return reqBody;
+  if (reqBody.body && reqBody.body.id) return reqBody.body;
+  if (reqBody.credential && reqBody.credential.id) return reqBody.credential;
+  if (reqBody.response && reqBody.response.id) return reqBody.response;
+  return reqBody;
+};
+
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const signToken = (id) => {
@@ -498,8 +507,12 @@ exports.generatePasskeyRegistrationOptions = async (req, res, next) => {
 exports.verifyPasskeyRegistration = async (req, res, next) => {
   try {
     const user = req.user;
-    const authResponse = req.body.response || req.body.body || req.body;
+    const authResponse = extractPasskeyPayload(req.body);
     const { rpID, origin } = getRpIdAndOrigin(req);
+
+    if (!authResponse || !authResponse.id) {
+      throw new AppError('Invalid passkey response payload', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
 
     const { data: dbUser } = await supabase.from('users').select('current_challenge').eq('id', user.id).single();
     if (!dbUser || !dbUser.current_challenge) {
@@ -595,7 +608,7 @@ exports.generatePasskeyLoginOptions = async (req, res, next) => {
 exports.verifyPasskeyLogin = async (req, res, next) => {
   try {
     const { email } = req.body;
-    const authResponse = req.body.response || req.body.body || req.body;
+    const authResponse = extractPasskeyPayload(req.body);
 
     if (!authResponse || !authResponse.id) {
       throw new AppError('Invalid passkey response payload', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
