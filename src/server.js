@@ -48,6 +48,21 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+// API Request Logger Middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  const { method, originalUrl } = req;
+
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const statusCode = res.statusCode;
+    const statusSymbol = statusCode >= 400 ? '❌' : '✅';
+    console.log(`[API CALL] ${statusSymbol} Method: ${method} | Endpoint: ${originalUrl} | Status: ${statusCode} | Time: ${duration}ms`);
+  });
+
+  next();
+});
+
 // Health Check Endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Server is running' });
@@ -62,12 +77,9 @@ app.use((err, req, res, next) => {
   const code = err.code || 'INTERNAL_SERVER_ERROR';
   const message = err.message || 'Something went wrong';
 
-  // Only log stack traces for actual server errors (500s), not client errors (401s, 400s)
-  if (statusCode >= 500) {
-    console.error(err.stack);
-  } else if (process.env.NODE_ENV !== 'production') {
-    // Optionally log a short message for 4xx errors in development
-    console.log(`[${statusCode}] ${message}`);
+  console.error(`[BACKEND ERROR] 🚨 ${req.method} ${req.originalUrl} | Status: ${statusCode} (${code}) | Error: ${message}`);
+  if (err.stack) {
+    console.error(`Stack trace:\n${err.stack}`);
   }
 
   res.status(statusCode).json({
