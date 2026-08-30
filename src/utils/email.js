@@ -152,6 +152,23 @@ const sendPasswordResetEmail = async (email, resetToken) => {
 
 const sendShareEmail = async (email, sharerName, resourceName, role, message) => {
   try {
+    const vercelEmailUrl = process.env.EMAIL_API_URL || 'https://cloud-based-media-files-storage-bac.vercel.app';
+    if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
+      try {
+        const resp = await fetch(`${vercelEmailUrl}/api/email/share`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, sharerName, resourceName, role, message })
+        });
+        if (resp.ok) {
+          console.log("Share email dispatched via Vercel Email API to:", email);
+          return;
+        }
+      } catch (e) {
+        console.warn("Vercel Email API fetch failed, falling back to direct Nodemailer:", e.message);
+      }
+    }
+
     const mailTransporter = await createTransporter();
     
     const dashboardUrl = `${getFrontendUrl()}/dashboard`;
