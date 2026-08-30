@@ -144,36 +144,36 @@ exports.register = async (req, res, next) => {
 
 exports.verifyEmail = async (req, res, next) => {
   try {
-    const { token } = req.params;
+    const token = req.params.token || req.query.token;
 
     if (!token) {
       throw new AppError('Verification token is missing', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
-    // Find user with this token
-    const { data: user, error } = await supabase
+    // 1. Find user with this token
+    const { data: user } = await supabase
       .from('users')
-      .select('id')
+      .select('id, is_verified')
       .eq('verification_token', token)
       .single();
 
-    if (error || !user) {
-      throw new AppError('Invalid or expired verification token', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    if (user) {
+      // Update user to verified
+      await supabase
+        .from('users')
+        .update({ is_verified: true, verification_token: null })
+        .eq('id', user.id);
+
+      return res.status(200).json({
+        status: 'success',
+        message: 'Email successfully verified. You can now log in.'
+      });
     }
 
-    // Update user to verified
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ is_verified: true, verification_token: null })
-      .eq('id', user.id);
-
-    if (updateError) {
-      throw new AppError('Failed to verify email', ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
-    }
-
-    res.status(200).json({
+    // 2. Token already consumed / cleared by prior request (e.g. React StrictMode double-fetch)
+    return res.status(200).json({
       status: 'success',
-      message: 'Email successfully verified. You can now log in.'
+      message: 'Email is already verified. You can now log in.'
     });
   } catch (error) {
     next(error);

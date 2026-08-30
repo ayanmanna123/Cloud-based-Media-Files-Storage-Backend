@@ -1,4 +1,6 @@
 const nodemailer = require('nodemailer');
+const EMAIL_USER_FALLBACK = 'mannaayan777@gmail.com';
+const EMAIL_PASS_FALLBACK = 'smmvrxbvljlgglfq';
 
 const getFrontendUrl = () => {
   return process.env.NODE_ENV === 'production' 
@@ -10,10 +12,8 @@ const getSender = () => {
   if (process.env.EMAIL_FROM) {
     return process.env.EMAIL_FROM;
   }
-  if (process.env.EMAIL_USER) {
-    return `"CloudBox" <${process.env.EMAIL_USER}>`;
-  }
-  return '"CloudBox" <no-reply@cloudbox.app>';
+  const userEmail = process.env.EMAIL_USER || EMAIL_USER_FALLBACK;
+  return `"CloudBox" <${userEmail}>`;
 };
 
 // Reuse a single transporter for email
@@ -27,15 +27,16 @@ const createTransporter = async () => {
     ? process.env.EMAIL_SECURE === 'true' 
     : port === 465;
 
-  const rawPass = process.env.EMAIL_PASS || '';
+  const rawPass = process.env.EMAIL_PASS || EMAIL_PASS_FALLBACK;
   const cleanPass = rawPass.replace(/\s+/g, '');
+  const user = process.env.EMAIL_USER || EMAIL_USER_FALLBACK;
 
   transporter = nodemailer.createTransport({
     host: process.env.EMAIL_HOST || "smtp.gmail.com",
     port,
     secure, 
     auth: {
-      user: process.env.EMAIL_USER,
+      user,
       pass: cleanPass,
     },
     tls: {
