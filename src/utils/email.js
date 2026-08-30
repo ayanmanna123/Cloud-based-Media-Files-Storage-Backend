@@ -22,10 +22,13 @@ let transporter;
 const createTransporter = async () => {
   if (transporter) return transporter;
 
-  const port = parseInt(process.env.EMAIL_PORT || "587", 10);
+  const port = parseInt(process.env.EMAIL_PORT || "465", 10);
   const secure = process.env.EMAIL_SECURE !== undefined 
     ? process.env.EMAIL_SECURE === 'true' 
     : port === 465;
+
+  const rawPass = process.env.EMAIL_PASS || '';
+  const cleanPass = rawPass.replace(/\s+/g, '');
 
   transporter = nodemailer.createTransport({
     host: process.env.EMAIL_HOST || "smtp.gmail.com",
@@ -33,7 +36,7 @@ const createTransporter = async () => {
     secure, 
     auth: {
       user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
+      pass: cleanPass,
     },
     tls: {
       rejectUnauthorized: false
