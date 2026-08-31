@@ -446,10 +446,19 @@ exports.getMe = async (req, res, next) => {
     // Default storage limit: 50 MB
     const storageLimit = 50 * 1024 * 1024;
 
+    // Check passkey status
+    const { count: passkeyCount } = await supabase
+      .from('passkeys')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', req.user.id);
+
+    const hasPasskey = Boolean(passkeyCount && passkeyCount > 0);
+
     res.status(200).json({
       user: {
         ...req.user,
         secretCode: req.user.secret_code,
+        hasPasskey,
         storageUsed,
         storageLimit
       },
