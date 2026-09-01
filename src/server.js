@@ -70,7 +70,8 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     const statusCode = res.statusCode;
     const statusSymbol = statusCode >= 400 ? '❌' : '✅';
-    console.log(`[API CALL] ${statusSymbol} Method: ${method} | Endpoint: ${originalUrl} | Status: ${statusCode} | Time: ${duration}ms`);
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(`[API CALL] [${timestamp}] ${statusSymbol} Method: ${method} | Endpoint: ${originalUrl} | Status: ${statusCode} | Time: ${duration}ms`);
   });
 
   next();
