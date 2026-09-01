@@ -117,23 +117,62 @@ const checkFileEditor = async (fileId, userId) => {
 
 exports.initFileUpload = async (req, res, next) => {
   try {
-    const { name, mimeType, sizeBytes, folderId, targetFileId, isEncrypted, encryptionIv } = req.body;
+    const { name, mimeType, sizeBytes, folderId, targetFileId, isEncrypted, encryptionIv, sourceDevice, isDeviceSync } = req.body;
 
     if (!name || !mimeType || !sizeBytes) {
       throw new AppError('Missing required file metadata', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
     let fileOwnerId = req.user.id;
-    if (folderId) {
-      const folderRole = await getFolderShareRole(folderId, req.user.id);
-      if (folderRole !== 'owner' && folderRole !== 'editor') {
+    let targetFolderId = folderId || null;
+
+    // If device sync upload and no explicit folder specified, find/create Mobile Uploads or Laptop Uploads folder
+    if (!targetFolderId && (isDeviceSync || (sourceDevice && sourceDevice !== 'unknown'))) {
+      const deviceType = (sourceDevice || 'laptop').toLowerCase();
+      const folderName = deviceType === 'mobile' ? 'Mobile Uploads' : 'Laptop Uploads';
+
+      try {
+        const { data: existingFolder } = await supabase
+          .from('folders')
+          .select('id')
+          .eq('owner_id', fileOwnerId)
+          .eq('name', folderName)
+          .is('parent_id', null)
+          .eq('is_deleted', false)
+          .maybeSingle();
+
+        if (existingFolder) {
+          targetFolderId = existingFolder.id;
+        } else {
+          const { data: createdFolder } = await supabase
+            .from('folders')
+            .insert([{
+              name: folderName,
+              owner_id: fileOwnerId,
+              parent_id: null
+            }])
+            .select('id')
+            .single();
+
+          if (createdFolder) {
+            targetFolderId = createdFolder.id;
+          }
+        }
+      } catch (folderErr) {
+        console.error("Error auto-creating device sync folder:", folderErr);
+      }
+    }
+
+    if (targetFolderId) {
+      const folderRole = await getFolderShareRole(targetFolderId, req.user.id);
+      if (folderRole && folderRole !== 'owner' && folderRole !== 'editor') {
         throw new AppError('Unauthorized to edit this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
       }
       
       const { data: parentFolder } = await supabase
         .from('folders')
         .select('owner_id')
-        .eq('id', folderId)
+        .eq('id', targetFolderId)
         .single();
       if (parentFolder) {
         fileOwnerId = parentFolder.owner_id;
@@ -186,8 +225,8 @@ exports.initFileUpload = async (req, res, next) => {
         .eq('name', name)
         .eq('is_deleted', false);
         
-      if (folderId) {
-        query = query.eq('folder_id', folderId);
+      if (targetFolderId) {
+        query = query.eq('folder_id', targetFolderId);
       } else {
         query = query.is('folder_id', null);
       }
@@ -206,6 +245,13 @@ exports.initFileUpload = async (req, res, next) => {
     let isNewVersion = false;
 
     if (existingFileId) {
+        if (isDeviceSync && !targetFileId) {
+          return res.status(200).json({
+            fileId: existingFileId,
+            isDuplicate: true,
+            message: 'File already synced'
+          });
+        }
         fileId = existingFileId;
         isNewVersion = true;
     } else {
@@ -215,7 +261,9 @@ exports.initFileUpload = async (req, res, next) => {
           size_bytes: sizeBytes,
           storage_key: storageKey,
           owner_id: fileOwnerId,
-          folder_id: folderId || null,
+          folder_id: targetFolderId || null,
+          source_device: sourceDevice || 'unknown',
+          is_device_sync: !!isDeviceSync
         };
         if (isEncrypted !== undefined) {
           insertPayload.is_encrypted = isEncrypted;
@@ -231,9 +279,11 @@ exports.initFileUpload = async (req, res, next) => {
           .single();
 
         if (error) {
-          if (error.message && (error.message.includes('is_encrypted') || error.message.includes('column') || error.message.includes('schema cache'))) {
+          if (error.message && (error.message.includes('is_encrypted') || error.message.includes('source_device') || error.message.includes('column') || error.message.includes('schema cache'))) {
             delete insertPayload.is_encrypted;
             delete insertPayload.encryption_iv;
+            delete insertPayload.source_device;
+            delete insertPayload.is_device_sync;
             const retry = await supabase
               .from('files')
               .insert([insertPayload])
@@ -860,3 +910,133 @@ exports.copyFile = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.getDeviceSyncStatus = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    // Find Mobile Uploads and Laptop Uploads folders for this user
+    let mobileFolderId = null;
+    let laptopFolderId = null;
+
+    try {
+      const { data: userFolders } = await supabase
+        .from('folders')
+        .select('id, name')
+        .eq('owner_id', userId)
+        .eq('is_deleted', false)
+        .in('name', ['Mobile Uploads', 'Laptop Uploads']);
+
+      if (userFolders) {
+        mobileFolderId = userFolders.find(f => f.name === 'Mobile Uploads')?.id || null;
+        laptopFolderId = userFolders.find(f => f.name === 'Laptop Uploads')?.id || null;
+      }
+    } catch (fErr) {
+      console.error("Error fetching device sync folders:", fErr);
+    }
+
+    let files = [];
+    try {
+      const { data, error } = await supabase
+        .from('files')
+        .select('id, name, mime_type, size_bytes, source_device, is_device_sync, created_at, folder_id')
+        .eq('owner_id', userId)
+        .eq('is_deleted', false);
+
+      if (!error && data) {
+        files = data;
+      }
+    } catch (e) {
+      // Fallback
+    }
+
+    const mobileFiles = files.filter(f => 
+      (mobileFolderId && f.folder_id === mobileFolderId) || 
+      f.source_device === 'mobile' || 
+      (f.is_device_sync && f.source_device !== 'laptop')
+    );
+
+    const laptopFiles = files.filter(f => 
+      (laptopFolderId && f.folder_id === laptopFolderId) || 
+      f.source_device === 'laptop' || 
+      f.source_device === 'desktop'
+    );
+
+    const totalSyncedFiles = files.filter(f => 
+      f.is_device_sync || 
+      (mobileFolderId && f.folder_id === mobileFolderId) || 
+      (laptopFolderId && f.folder_id === laptopFolderId) || 
+      ['mobile', 'laptop', 'desktop'].includes(f.source_device)
+    );
+
+    const mobileBytes = mobileFiles.reduce((acc, f) => acc + Number(f.size_bytes || 0), 0);
+    const laptopBytes = laptopFiles.reduce((acc, f) => acc + Number(f.size_bytes || 0), 0);
+    const totalBytes = totalSyncedFiles.reduce((acc, f) => acc + Number(f.size_bytes || 0), 0);
+
+    let syncLogs = [];
+    try {
+      const { data: logsData } = await supabase
+        .from('device_sync_logs')
+        .select('*')
+        .eq('user_id', userId)
+        .order('synced_at', { ascending: false })
+        .limit(10);
+      if (logsData) syncLogs = logsData;
+    } catch (logErr) {
+      // Table might not exist yet
+    }
+
+    res.status(200).json({
+      mobileFolderId,
+      laptopFolderId,
+      mobile: {
+        filesCount: mobileFiles.length,
+        totalBytes: mobileBytes
+      },
+      laptop: {
+        filesCount: laptopFiles.length,
+        totalBytes: laptopBytes
+      },
+      total: {
+        filesCount: totalSyncedFiles.length,
+        totalBytes: totalBytes
+      },
+      recentLogs: keysToCamel(syncLogs),
+      syncedFiles: keysToCamel(totalSyncedFiles.slice(0, 20)),
+      syncedFileNames: Array.from(new Set(files.map(f => f.name.toLowerCase())))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.recordDeviceSyncLog = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { deviceType, deviceName, filesCount, totalBytes } = req.body;
+
+    let logData = null;
+    try {
+      const { data, error } = await supabase
+        .from('device_sync_logs')
+        .insert([{
+          user_id: userId,
+          device_type: deviceType || 'unknown',
+          device_name: deviceName || 'Device',
+          files_count: filesCount || 0,
+          total_bytes: totalBytes || 0,
+          synced_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
+      if (!error && data) logData = data;
+    } catch (e) {
+      // Ignore if table not present
+    }
+
+    res.status(200).json({ success: true, log: logData ? keysToCamel(logData) : null });
+  } catch (error) {
+    next(error);
+  }
+};
+

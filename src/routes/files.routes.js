@@ -10,6 +10,8 @@ router.use(protect);
 router.post('/init', filesController.initFileUpload);
 router.post('/complete', filesController.completeFileUpload);
 router.get('/recent', filesController.getRecentFiles);
+router.get('/sync/status', filesController.getDeviceSyncStatus);
+router.post('/sync/log', filesController.recordDeviceSyncLog);
 router.get('/:id', filesController.getFile);
 router.patch('/:id', filesController.updateFile);
 router.delete('/:id', filesController.deleteFile);
