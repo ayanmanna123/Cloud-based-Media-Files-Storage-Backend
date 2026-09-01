@@ -306,7 +306,14 @@ exports.login = async (req, res, next) => {
 };
 
 exports.logout = (req, res) => {
-  res.clearCookie('jwt');
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    expires: new Date(0),
+  };
+  res.cookie('jwt', '', cookieOptions);
+  res.clearCookie('jwt', cookieOptions);
   res.status(200).json({ status: 'success' });
 };
 
