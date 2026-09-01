@@ -28,10 +28,23 @@ const limiter = rateLimit({
 initCronJobs();
 
 // Global Middlewares
-const allowedOrigins = ['http://localhost:5173', 'https://cloud-based-media-files-storage-fro.vercel.app'];
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://cloud-based-media-files-storage-fro.vercel.app',
+  'https://cloud-based-media-files-storage-frontend.ayanmanna858.workers.dev'
+];
+
+if (process.env.FRONTEND_URL) {
+  allowedOrigins.push(process.env.FRONTEND_URL.replace(/\/$/, ''));
+}
+if (process.env.CLIENT_URL) {
+  allowedOrigins.push(process.env.CLIENT_URL.replace(/\/$/, ''));
+}
+
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.indexOf(origin.replace(/\/$/, '')) !== -1) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
