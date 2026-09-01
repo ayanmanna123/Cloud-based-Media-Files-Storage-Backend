@@ -131,7 +131,7 @@ exports.register = async (req, res, next) => {
 
     // 4. Send Verification Email (await for Serverless compatibility)
     try {
-      await sendVerificationEmail(email, verificationToken);
+      await sendVerificationEmail(email, verificationToken, req);
     } catch (emailErr) {
       console.error("Verification email send error:", emailErr);
     }
@@ -346,7 +346,7 @@ exports.forgotPassword = async (req, res, next) => {
 
     // 4. Send Email (await for Serverless compatibility)
     try {
-      await sendPasswordResetEmail(email, resetToken);
+      await sendPasswordResetEmail(email, resetToken, req);
     } catch (emailErr) {
       console.error("Password reset email error:", emailErr);
     }

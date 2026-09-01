@@ -89,7 +89,7 @@ exports.createShare = async (req, res, next) => {
     // Send email notification (await for Serverless compatibility)
     const sharerName = req.user?.name || req.user?.email || 'Someone';
     try {
-      await sendShareEmail(email, sharerName, resourceName, role, message);
+      await sendShareEmail(email, sharerName, resourceName, role, message, req);
     } catch (emailErr) {
       console.error("Share email send error:", emailErr);
     }

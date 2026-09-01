@@ -2,7 +2,44 @@ const nodemailer = require('nodemailer');
 const EMAIL_USER_FALLBACK = 'mannaayan777@gmail.com';
 const EMAIL_PASS_FALLBACK = 'smmvrxbvljlgglfq';
 
-const getFrontendUrl = () => {
+const getFrontendUrl = (reqOrUrl) => {
+  if (typeof reqOrUrl === 'string' && reqOrUrl.trim()) {
+    return reqOrUrl.trim().replace(/\/$/, '');
+  }
+
+  if (reqOrUrl && typeof reqOrUrl === 'object') {
+    if (reqOrUrl.body && typeof reqOrUrl.body.frontendUrl === 'string' && reqOrUrl.body.frontendUrl.trim()) {
+      return reqOrUrl.body.frontendUrl.trim().replace(/\/$/, '');
+    }
+    if (reqOrUrl.body && typeof reqOrUrl.body.clientUrl === 'string' && reqOrUrl.body.clientUrl.trim()) {
+      return reqOrUrl.body.clientUrl.trim().replace(/\/$/, '');
+    }
+
+    if (typeof reqOrUrl.get === 'function') {
+      const originHeader = reqOrUrl.get('origin');
+      if (originHeader && originHeader !== 'null') {
+        return originHeader.replace(/\/$/, '');
+      }
+
+      const refererHeader = reqOrUrl.get('referer') || reqOrUrl.get('referrer');
+      if (refererHeader) {
+        try {
+          const parsed = new URL(refererHeader);
+          return parsed.origin.replace(/\/$/, '');
+        } catch (e) {
+          // invalid referer URL format
+        }
+      }
+    }
+  }
+
+  if (process.env.CLIENT_URL) {
+    return process.env.CLIENT_URL.replace(/\/$/, '');
+  }
+  if (process.env.FRONTEND_URL) {
+    return process.env.FRONTEND_URL.replace(/\/$/, '');
+  }
+
   return process.env.NODE_ENV === 'production' 
     ? 'https://cloud-based-media-files-storage-fro.vercel.app' 
     : 'http://localhost:5173';
@@ -47,11 +84,29 @@ const createTransporter = async () => {
   return transporter;
 };
 
-const sendVerificationEmail = async (email, verificationToken) => {
+const sendVerificationEmail = async (email, verificationToken, reqOrUrl) => {
   try {
+    const frontendUrl = getFrontendUrl(reqOrUrl);
+    const vercelEmailUrl = process.env.EMAIL_API_URL || 'https://cloud-based-media-files-storage-bac.vercel.app';
+    if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
+      try {
+        const resp = await fetch(`${vercelEmailUrl}/api/email/verification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, verificationToken, frontendUrl })
+        });
+        if (resp.ok) {
+          console.log("Verification email dispatched via Vercel Email API to:", email);
+          return;
+        }
+      } catch (e) {
+        console.warn("Vercel Email API fetch failed, falling back to direct Nodemailer:", e.message);
+      }
+    }
+
     const mailTransporter = await createTransporter();
     
-    const verifyUrl = `${getFrontendUrl()}/verify?token=${verificationToken}`;
+    const verifyUrl = `${frontendUrl}/verify?token=${verificationToken}`;
 
     const mailOptions = {
       from: getSender(), // sender address
@@ -99,11 +154,29 @@ const sendVerificationEmail = async (email, verificationToken) => {
   }
 };
 
-const sendPasswordResetEmail = async (email, resetToken) => {
+const sendPasswordResetEmail = async (email, resetToken, reqOrUrl) => {
   try {
+    const frontendUrl = getFrontendUrl(reqOrUrl);
+    const vercelEmailUrl = process.env.EMAIL_API_URL || 'https://cloud-based-media-files-storage-bac.vercel.app';
+    if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
+      try {
+        const resp = await fetch(`${vercelEmailUrl}/api/email/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, resetToken, frontendUrl })
+        });
+        if (resp.ok) {
+          console.log("Password reset email dispatched via Vercel Email API to:", email);
+          return;
+        }
+      } catch (e) {
+        console.warn("Vercel Email API fetch failed, falling back to direct Nodemailer:", e.message);
+      }
+    }
+
     const mailTransporter = await createTransporter();
     
-    const resetUrl = `${getFrontendUrl()}/reset-password?token=${resetToken}`;
+    const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     const mailOptions = {
       from: getSender(),
@@ -150,15 +223,16 @@ const sendPasswordResetEmail = async (email, resetToken) => {
   }
 };
 
-const sendShareEmail = async (email, sharerName, resourceName, role, message) => {
+const sendShareEmail = async (email, sharerName, resourceName, role, message, reqOrUrl) => {
   try {
+    const frontendUrl = getFrontendUrl(reqOrUrl);
     const vercelEmailUrl = process.env.EMAIL_API_URL || 'https://cloud-based-media-files-storage-bac.vercel.app';
     if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
       try {
         const resp = await fetch(`${vercelEmailUrl}/api/email/share`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, sharerName, resourceName, role, message })
+          body: JSON.stringify({ email, sharerName, resourceName, role, message, frontendUrl })
         });
         if (resp.ok) {
           console.log("Share email dispatched via Vercel Email API to:", email);
@@ -171,7 +245,7 @@ const sendShareEmail = async (email, sharerName, resourceName, role, message) =>
 
     const mailTransporter = await createTransporter();
     
-    const dashboardUrl = `${getFrontendUrl()}/dashboard`;
+    const dashboardUrl = `${frontendUrl}/dashboard`;
 
     const mailOptions = {
       from: getSender(),
