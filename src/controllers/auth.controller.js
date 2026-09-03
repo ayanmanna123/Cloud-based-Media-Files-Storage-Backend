@@ -95,6 +95,19 @@ exports.register = async (req, res, next) => {
       throw new AppError('Please provide name, email, and password', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
     }
 
+    const trimmedName = name.trim();
+    if (trimmedName.length < 2) {
+      throw new AppError('Full name must be at least 2 characters long', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    if (/\d/.test(trimmedName)) {
+      throw new AppError('Full name cannot contain numbers (e.g. 123)', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
+    if (!/[\p{L}]/u.test(trimmedName)) {
+      throw new AppError('Please enter a valid full name using letters', ERROR_CODES.BAD_REQUEST.status, ERROR_CODES.BAD_REQUEST.code);
+    }
+
     // 1. Check if user exists
     const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
     
