@@ -223,7 +223,7 @@ const sendPasswordResetEmail = async (email, resetToken, reqOrUrl) => {
   }
 };
 
-const sendShareEmail = async (email, sharerName, resourceName, role, message, reqOrUrl) => {
+const sendShareEmail = async (email, sharerName, resourceName, role, message, reqOrUrl, publicUrl = null) => {
   try {
     const frontendUrl = getFrontendUrl(reqOrUrl);
     const vercelEmailUrl = process.env.EMAIL_API_URL || 'https://cloud-based-media-files-storage-bac.vercel.app';
@@ -232,7 +232,7 @@ const sendShareEmail = async (email, sharerName, resourceName, role, message, re
         const resp = await fetch(`${vercelEmailUrl}/api/email/share`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, sharerName, resourceName, role, message, frontendUrl })
+          body: JSON.stringify({ email, sharerName, resourceName, role, message, frontendUrl, publicUrl })
         });
         if (resp.ok) {
           console.log("Share email dispatched via Vercel Email API to:", email);
@@ -245,13 +245,17 @@ const sendShareEmail = async (email, sharerName, resourceName, role, message, re
 
     const mailTransporter = await createTransporter();
     
-    const dashboardUrl = `${frontendUrl}/dashboard`;
+    const targetUrl = publicUrl || `${frontendUrl}/dashboard`;
+    const buttonText = publicUrl ? 'View Shared Item' : 'Open in CloudBox';
+    const accessMessage = publicUrl 
+      ? `<strong>${sharerName}</strong> has sent you a direct link to view and download <strong>${resourceName}</strong>.`
+      : `<strong>${sharerName}</strong> has given you access to <strong>${resourceName}</strong> as a <strong>${role}</strong>.`;
 
     const mailOptions = {
       from: getSender(),
       to: email,
       subject: `${sharerName} shared "${resourceName}" with you - CloudBox`,
-      text: `${sharerName} has shared a file/folder with you on CloudBox.\n\n${message ? `Message: "${message}"\n\n` : ''}Role: ${role}\n\nView it here: ${dashboardUrl}`,
+      text: `${sharerName} has shared a file/folder with you on CloudBox.\n\n${message ? `Message: "${message}"\n\n` : ''}Access Link: ${targetUrl}`,
       headers: {
         'X-Priority': '3',
         'X-MSMail-Priority': 'Normal',
@@ -265,12 +269,12 @@ const sendShareEmail = async (email, sharerName, resourceName, role, message, re
             </div>
             <div style="padding: 40px 30px; color: #333333; line-height: 1.6; font-size: 16px;">
               <h2 style="margin-top: 0; color: #1f2937; font-size: 22px;">${sharerName} shared an item with you</h2>
-              <p style="margin-bottom: 24px;"><strong>${sharerName}</strong> has given you access to <strong>${resourceName}</strong> as a <strong>${role}</strong>.</p>
+              <p style="margin-bottom: 24px;">${accessMessage}</p>
               
               ${message ? `<div style="background-color: #f3f4f6; border-left: 4px solid #4F46E5; padding: 16px; margin-bottom: 24px; color: #4b5563; font-style: italic;">"${message}"</div>` : ''}
               
               <div style="text-align: center; margin: 36px 0;">
-                <a href="${dashboardUrl}" style="display: inline-block; background-color: #4F46E5; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-weight: 600; font-size: 16px;" target="_blank">Open in CloudBox</a>
+                <a href="${targetUrl}" style="display: inline-block; background-color: #4F46E5; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-weight: 600; font-size: 16px;" target="_blank">${buttonText}</a>
               </div>
               
               <p style="margin-top: 32px; font-size: 14px; color: #6b7280;">If you are unsure why you received this email, you can safely ignore it.</p>

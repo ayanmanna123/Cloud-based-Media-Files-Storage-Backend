@@ -109,9 +109,9 @@ exports.register = async (req, res, next) => {
     }
 
     // 1. Check if user exists
-    const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
+    const { data: existingUser } = await supabase.from('users').select('id, password_hash').eq('email', email.trim()).maybeSingle();
     
-    if (existingUser) {
+    if (existingUser && existingUser.password_hash) {
       throw new AppError('Email is already in use', ERROR_CODES.CONFLICT.status, ERROR_CODES.CONFLICT.code);
     }
 
@@ -125,18 +125,40 @@ exports.register = async (req, res, next) => {
     const md5Hash = crypto.createHash('md5').update(emailLower).digest('hex');
     const imageUrl = `https://www.gravatar.com/avatar/${md5Hash}?d=identicon`;
 
-    // 3. Create user (is_verified defaults to false)
-    const { data: newUser, error } = await supabase
-      .from('users')
-      .insert([{ 
-        email, 
-        name, 
-        password_hash: passwordHash,
-        verification_token: verificationToken,
-        image_url: imageUrl
-      }])
-      .select('id, email, name, image_url, created_at')
-      .single();
+    // 3. Create or update user (is_verified defaults to false)
+    let newUser = null;
+    let error = null;
+
+    if (existingUser && !existingUser.password_hash) {
+      const { data: updated, error: updateErr } = await supabase
+        .from('users')
+        .update({
+          name,
+          password_hash: passwordHash,
+          verification_token: verificationToken,
+          image_url: imageUrl,
+          is_verified: false
+        })
+        .eq('id', existingUser.id)
+        .select('id, email, name, image_url, created_at')
+        .single();
+      newUser = updated;
+      error = updateErr;
+    } else {
+      const { data: created, error: createErr } = await supabase
+        .from('users')
+        .insert([{ 
+          email: email.trim(), 
+          name, 
+          password_hash: passwordHash,
+          verification_token: verificationToken,
+          image_url: imageUrl
+        }])
+        .select('id, email, name, image_url, created_at')
+        .single();
+      newUser = created;
+      error = createErr;
+    }
 
     if (error) {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);

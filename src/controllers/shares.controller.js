@@ -1,4 +1,5 @@
 const supabase = require('../config/supabase');
+const crypto = require('crypto');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 const { sendShareEmail } = require('../utils/email');
@@ -37,17 +38,6 @@ exports.createShare = async (req, res, next) => {
 
     let resourceName = '';
 
-    // Lookup grantee user by email
-    const { data: granteeUser, error: userError } = await supabase
-      .from('users')
-      .select('id, name')
-      .eq('email', email)
-      .single();
-
-    if (userError || !granteeUser) {
-      throw new AppError('No user found with that email address', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
-    }
-
     // Fetch the resource name and sharer name for the email
     // Verify that req.user.id is the owner of the resource
     if (resourceType === 'folder') {
@@ -56,15 +46,58 @@ exports.createShare = async (req, res, next) => {
         throw new AppError('Only the owner can share this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
       }
       resourceName = f.name;
-    } else {
+    } else if (resourceType === 'file') {
       const { data: f } = await supabase.from('files').select('name, owner_id').eq('id', resourceId).single();
       if (!f || f.owner_id !== req.user.id) {
         throw new AppError('Only the owner can share this file', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
       }
       resourceName = f.name;
+    } else if (resourceType === 'bundle') {
+      resourceName = Array.isArray(resourceId) ? `${resourceId.length} files` : 'File Bundle';
     }
 
-    // Insert share
+    const sharerName = req.user?.name || req.user?.email || 'Someone';
+
+    // Lookup grantee user by email
+    let { data: granteeUser } = await supabase
+      .from('users')
+      .select('id, name, password_hash')
+      .eq('email', email.trim())
+      .maybeSingle();
+
+    let isUnregistered = false;
+
+    if (!granteeUser) {
+      isUnregistered = true;
+      // User not registered: Create invited user record in users table
+      const newUserId = crypto.randomUUID();
+      const { data: createdUser, error: createUserErr } = await supabase
+        .from('users')
+        .insert([{
+          id: newUserId,
+          email: email.trim(),
+          name: email.trim().split('@')[0],
+          is_verified: false,
+          password_hash: null
+        }])
+        .select('id, name, email')
+        .single();
+
+      if (createdUser) {
+        granteeUser = createdUser;
+      } else {
+        const { data: fetchedUser } = await supabase
+          .from('users')
+          .select('id, name, email')
+          .eq('email', email.trim())
+          .single();
+        granteeUser = fetchedUser;
+      }
+    } else if (!granteeUser.password_hash) {
+      isUnregistered = true;
+    }
+
+    // Insert share into shares table so grantee appears under People with access
     const { data, error } = await supabase
       .from('shares')
       .insert([
@@ -86,15 +119,79 @@ exports.createShare = async (req, res, next) => {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
-    // Send email notification (await for Serverless compatibility)
-    const sharerName = req.user?.name || req.user?.email || 'Someone';
+    // If unregistered user, generate or reuse public share link and email them the direct link
+    let publicUrl = null;
+    let token = null;
+
+    if (isUnregistered) {
+      if (resourceType === 'bundle') {
+        const fileIds = Array.isArray(resourceId) ? resourceId : [resourceId];
+        const newToken = crypto.randomBytes(16).toString('hex');
+        const { data: bundleData, error: bundleErr } = await supabase
+          .from('bundle_shares')
+          .insert([{ file_ids: fileIds, token: newToken, created_by: req.user.id }])
+          .select()
+          .single();
+        if (bundleErr) {
+          throw new AppError(bundleErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+        }
+        token = bundleData.token;
+      } else {
+        const { data: existingLink } = await supabase
+          .from('link_shares')
+          .select('token')
+          .eq('resource_type', resourceType)
+          .eq('resource_id', resourceId)
+          .eq('created_by', req.user.id)
+          .maybeSingle();
+
+        if (existingLink && existingLink.token) {
+          token = existingLink.token;
+        } else {
+          const newToken = crypto.randomBytes(16).toString('hex');
+          const { data: linkData, error: linkErr } = await supabase
+            .from('link_shares')
+            .insert([{ resource_type: resourceType, resource_id: resourceId, token: newToken, created_by: req.user.id }])
+            .select()
+            .single();
+          if (linkErr) {
+            throw new AppError(linkErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+          }
+          token = linkData.token;
+        }
+      }
+
+      const getOrigin = (r) => {
+        const origin = r.get('origin');
+        if (origin && origin !== 'null') return origin.replace(/\/$/, '');
+        const referer = r.get('referer') || r.get('referrer');
+        if (referer) {
+          try { return new URL(referer).origin.replace(/\/$/, ''); } catch (e) {}
+        }
+        if (process.env.CLIENT_URL) return process.env.CLIENT_URL.replace(/\/$/, '');
+        if (process.env.FRONTEND_URL) return process.env.FRONTEND_URL.replace(/\/$/, '');
+        return process.env.NODE_ENV === 'production' 
+          ? 'https://cloud-based-media-files-storage-fro.vercel.app' 
+          : 'http://localhost:5173';
+      };
+
+      const publicPath = resourceType === 'bundle' ? `/share/bundle/${token}` : `/share/${token}`;
+      publicUrl = `${getOrigin(req)}${publicPath}`;
+    }
+
+    // Send email notification
     try {
-      await sendShareEmail(email, sharerName, resourceName, role, message, req);
+      await sendShareEmail(email, sharerName, resourceName, role, message, req, publicUrl);
     } catch (emailErr) {
       console.error("Share email send error:", emailErr);
     }
 
-    res.status(201).json(keysToCamel(data));
+    res.status(201).json({
+      ...keysToCamel(data),
+      isUnregistered,
+      publicUrl,
+      token
+    });
   } catch (error) {
     next(error);
   }
