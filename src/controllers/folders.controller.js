@@ -130,6 +130,15 @@ exports.createFolder = async (req, res, next) => {
 
 exports.getRoot = async (req, res, next) => {
   try {
+    // Consolidate any duplicate device sync folders (Mobile/Laptop Uploads) before listing root
+    try {
+      const { getOrCreateDeviceSyncFolder } = require('./files.controller');
+      await getOrCreateDeviceSyncFolder(req.user.id, 'mobile');
+      await getOrCreateDeviceSyncFolder(req.user.id, 'laptop');
+    } catch (consolidateErr) {
+      console.error("Error consolidating device sync folders in getRoot:", consolidateErr);
+    }
+
     const { hiddenFolderIds, hiddenFileIds } = await getPersonalHiddenIds(req.user.id);
 
     // Get all folders to compute subfolder count in memory

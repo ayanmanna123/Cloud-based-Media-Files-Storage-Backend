@@ -115,6 +115,95 @@ const checkFileEditor = async (fileId, userId) => {
   return false;
 };
 
+const deviceSyncFolderPromises = new Map();
+
+exports.getOrCreateDeviceSyncFolder = async (ownerId, deviceType) => {
+  const normDevice = (deviceType || 'laptop').toLowerCase() === 'mobile' ? 'mobile' : 'laptop';
+  const folderName = normDevice === 'mobile' ? 'Mobile Uploads' : 'Laptop Uploads';
+  const lockKey = `${ownerId}_${folderName}`;
+
+  if (deviceSyncFolderPromises.has(lockKey)) {
+    return await deviceSyncFolderPromises.get(lockKey);
+  }
+
+  const promise = (async () => {
+    try {
+      // Find all active top-level folders matching folderName for this user
+      const { data: existingFolders } = await supabase
+        .from('folders')
+        .select('id, created_at')
+        .eq('owner_id', ownerId)
+        .eq('name', folderName)
+        .is('parent_id', null)
+        .eq('is_deleted', false)
+        .order('created_at', { ascending: true });
+
+      if (existingFolders && existingFolders.length > 0) {
+        const primaryFolder = existingFolders[0];
+
+        // If duplicate folders exist, consolidate files into primary folder and soft-delete duplicate folders
+        if (existingFolders.length > 1) {
+          const duplicateIds = existingFolders.slice(1).map(f => f.id);
+
+          await supabase
+            .from('files')
+            .update({ folder_id: primaryFolder.id })
+            .in('folder_id', duplicateIds);
+
+          await supabase
+            .from('folders')
+            .update({ is_deleted: true })
+            .in('id', duplicateIds);
+        }
+
+        return primaryFolder.id;
+      }
+
+      // No folder exists, insert single new folder
+      const { data: createdFolder, error: insertErr } = await supabase
+        .from('folders')
+        .insert([{
+          name: folderName,
+          owner_id: ownerId,
+          parent_id: null
+        }])
+        .select('id')
+        .single();
+
+      if (createdFolder) {
+        return createdFolder.id;
+      }
+
+      if (insertErr) {
+        const { data: retryFolders } = await supabase
+          .from('folders')
+          .select('id')
+          .eq('owner_id', ownerId)
+          .eq('name', folderName)
+          .is('parent_id', null)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: true })
+          .limit(1);
+
+        if (retryFolders && retryFolders.length > 0) {
+          return retryFolders[0].id;
+        }
+      }
+    } catch (folderErr) {
+      console.error("Error in getOrCreateDeviceSyncFolder:", folderErr);
+    }
+    return null;
+  })();
+
+  deviceSyncFolderPromises.set(lockKey, promise);
+
+  try {
+    return await promise;
+  } finally {
+    deviceSyncFolderPromises.delete(lockKey);
+  }
+};
+
 exports.initFileUpload = async (req, res, next) => {
   try {
     const { name, mimeType, sizeBytes, folderId, targetFileId, isEncrypted, encryptionIv, sourceDevice, isDeviceSync } = req.body;
@@ -129,52 +218,28 @@ exports.initFileUpload = async (req, res, next) => {
     // If device sync upload and no explicit folder specified, find/create Mobile Uploads or Laptop Uploads folder
     if (!targetFolderId && (isDeviceSync || (sourceDevice && sourceDevice !== 'unknown'))) {
       const deviceType = (sourceDevice || 'laptop').toLowerCase();
-      const folderName = deviceType === 'mobile' ? 'Mobile Uploads' : 'Laptop Uploads';
-
-      try {
-        const { data: existingFolder } = await supabase
-          .from('folders')
-          .select('id')
-          .eq('owner_id', fileOwnerId)
-          .eq('name', folderName)
-          .is('parent_id', null)
-          .eq('is_deleted', false)
-          .maybeSingle();
-
-        if (existingFolder) {
-          targetFolderId = existingFolder.id;
-        } else {
-          const { data: createdFolder } = await supabase
-            .from('folders')
-            .insert([{
-              name: folderName,
-              owner_id: fileOwnerId,
-              parent_id: null
-            }])
-            .select('id')
-            .single();
-
-          if (createdFolder) {
-            targetFolderId = createdFolder.id;
-          }
-        }
-      } catch (folderErr) {
-        console.error("Error auto-creating device sync folder:", folderErr);
-      }
+      targetFolderId = await exports.getOrCreateDeviceSyncFolder(fileOwnerId, deviceType);
     }
 
     if (targetFolderId) {
-      const folderRole = await getFolderShareRole(targetFolderId, req.user.id);
-      if (folderRole && folderRole !== 'owner' && folderRole !== 'editor') {
-        throw new AppError('Unauthorized to edit this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
-      }
-      
       const { data: parentFolder } = await supabase
         .from('folders')
-        .select('owner_id')
+        .select('owner_id, is_deleted')
         .eq('id', targetFolderId)
-        .single();
-      if (parentFolder) {
+        .maybeSingle();
+
+      if (!parentFolder || parentFolder.is_deleted) {
+        if (isDeviceSync || (sourceDevice && sourceDevice !== 'unknown')) {
+          const deviceType = (sourceDevice || 'laptop').toLowerCase();
+          targetFolderId = await exports.getOrCreateDeviceSyncFolder(fileOwnerId, deviceType);
+        } else {
+          targetFolderId = null;
+        }
+      } else {
+        const folderRole = await getFolderShareRole(targetFolderId, req.user.id);
+        if (folderRole && folderRole !== 'owner' && folderRole !== 'editor') {
+          throw new AppError('Unauthorized to edit this folder', ERROR_CODES.FORBIDDEN.status, ERROR_CODES.FORBIDDEN.code);
+        }
         fileOwnerId = parentFolder.owner_id;
       }
     }
@@ -920,17 +985,8 @@ exports.getDeviceSyncStatus = async (req, res, next) => {
     let laptopFolderId = null;
 
     try {
-      const { data: userFolders } = await supabase
-        .from('folders')
-        .select('id, name')
-        .eq('owner_id', userId)
-        .eq('is_deleted', false)
-        .in('name', ['Mobile Uploads', 'Laptop Uploads']);
-
-      if (userFolders) {
-        mobileFolderId = userFolders.find(f => f.name === 'Mobile Uploads')?.id || null;
-        laptopFolderId = userFolders.find(f => f.name === 'Laptop Uploads')?.id || null;
-      }
+      mobileFolderId = await exports.getOrCreateDeviceSyncFolder(userId, 'mobile');
+      laptopFolderId = await exports.getOrCreateDeviceSyncFolder(userId, 'laptop');
     } catch (fErr) {
       console.error("Error fetching device sync folders:", fErr);
     }
