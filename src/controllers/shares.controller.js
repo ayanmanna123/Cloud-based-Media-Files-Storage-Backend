@@ -119,11 +119,11 @@ exports.createShare = async (req, res, next) => {
       throw new AppError(error.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
     }
 
-    // If unregistered user, generate or reuse public share link and email them the direct link
+    // Generate or reuse public share link so email notification contains direct access link
     let publicUrl = null;
     let token = null;
 
-    if (isUnregistered) {
+    try {
       if (resourceType === 'bundle') {
         const fileIds = Array.isArray(resourceId) ? resourceId : [resourceId];
         const newToken = crypto.randomBytes(16).toString('hex');
@@ -132,10 +132,9 @@ exports.createShare = async (req, res, next) => {
           .insert([{ file_ids: fileIds, token: newToken, created_by: req.user.id }])
           .select()
           .single();
-        if (bundleErr) {
-          throw new AppError(bundleErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+        if (!bundleErr && bundleData) {
+          token = bundleData.token;
         }
-        token = bundleData.token;
       } else {
         const { data: existingLink } = await supabase
           .from('link_shares')
@@ -154,29 +153,32 @@ exports.createShare = async (req, res, next) => {
             .insert([{ resource_type: resourceType, resource_id: resourceId, token: newToken, created_by: req.user.id }])
             .select()
             .single();
-          if (linkErr) {
-            throw new AppError(linkErr.message, ERROR_CODES.INTERNAL_SERVER_ERROR.status, ERROR_CODES.INTERNAL_SERVER_ERROR.code);
+          if (!linkErr && linkData) {
+            token = linkData.token;
           }
-          token = linkData.token;
         }
       }
 
-      const getOrigin = (r) => {
-        const origin = r.get('origin');
-        if (origin && origin !== 'null') return origin.replace(/\/$/, '');
-        const referer = r.get('referer') || r.get('referrer');
-        if (referer) {
-          try { return new URL(referer).origin.replace(/\/$/, ''); } catch (e) {}
-        }
-        if (process.env.CLIENT_URL) return process.env.CLIENT_URL.replace(/\/$/, '');
-        if (process.env.FRONTEND_URL) return process.env.FRONTEND_URL.replace(/\/$/, '');
-        return process.env.NODE_ENV === 'production' 
-          ? 'https://cloud-based-media-files-storage-fro.vercel.app' 
-          : 'http://localhost:5173';
-      };
+      if (token) {
+        const getOrigin = (r) => {
+          const origin = r.get('origin');
+          if (origin && origin !== 'null') return origin.replace(/\/$/, '');
+          const referer = r.get('referer') || r.get('referrer');
+          if (referer) {
+            try { return new URL(referer).origin.replace(/\/$/, ''); } catch (e) {}
+          }
+          if (process.env.CLIENT_URL) return process.env.CLIENT_URL.replace(/\/$/, '');
+          if (process.env.FRONTEND_URL) return process.env.FRONTEND_URL.replace(/\/$/, '');
+          return process.env.NODE_ENV === 'production' 
+            ? 'https://cloud-based-media-files-storage-fro.vercel.app' 
+            : 'http://localhost:5173';
+        };
 
-      const publicPath = resourceType === 'bundle' ? `/share/bundle/${token}` : `/share/${token}`;
-      publicUrl = `${getOrigin(req)}${publicPath}`;
+        const publicPath = resourceType === 'bundle' ? `/share/bundle/${token}` : `/share/${token}`;
+        publicUrl = `${getOrigin(req)}${publicPath}`;
+      }
+    } catch (linkGenErr) {
+      console.warn("Public link generation for share email warning:", linkGenErr.message);
     }
 
     // Send email notification
