@@ -5,11 +5,11 @@ const { sendShareEmail, sendVerificationEmail, sendPasswordResetEmail } = requir
 // Dedicated Vercel Email API endpoints
 router.post('/share', async (req, res, next) => {
   try {
-    const { email, sharerName, resourceName, role, message, frontendUrl } = req.body;
+    const { email, sharerName, resourceName, role, message, frontendUrl, publicUrl } = req.body;
     if (!email || !resourceName) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
-    await sendShareEmail(email, sharerName || 'Someone', resourceName, role || 'viewer', message, frontendUrl || req);
+    await sendShareEmail(email, sharerName || 'Someone', resourceName, role || 'viewer', message, frontendUrl || req, publicUrl || null);
     res.status(200).json({ status: 'success', message: 'Share email sent successfully' });
   } catch (error) {
     next(error);
