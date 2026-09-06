@@ -3,6 +3,7 @@ const imagekit = require('../config/imagekit');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { keysToCamel } = require('../utils/caseConverter');
 const { getPersonalHiddenIds } = require('../utils/hiddenItems');
+const { checkStorageQuota } = require('../utils/storage');
 const crypto = require('crypto');
 const getFolderShareRole = async (folderId, userId) => {
   if (!folderId || !userId) return null;
@@ -243,6 +244,9 @@ exports.initFileUpload = async (req, res, next) => {
         fileOwnerId = parentFolder.owner_id;
       }
     }
+
+    // Enforce 50 MB storage limit check for fileOwnerId
+    await checkStorageQuota(fileOwnerId, sizeBytes);
 
     // Generate a unique storage key with strict sanitization (ImageKit replaces special chars with _)
     const uniqueId = crypto.randomUUID();
@@ -828,6 +832,9 @@ exports.copyFile = async (req, res, next) => {
     if (fileError || !file) {
       throw new AppError('File not found', ERROR_CODES.NOT_FOUND.status, ERROR_CODES.NOT_FOUND.code);
     }
+
+    // Enforce 50 MB storage limit check for current user copying the file
+    await checkStorageQuota(req.user.id, file.size_bytes);
 
     // Determine target folder: verify user can write to target folder if provided, else copy to root
     let targetFolderId = null;

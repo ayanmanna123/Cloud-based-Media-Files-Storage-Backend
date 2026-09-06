@@ -5,6 +5,7 @@ const { OAuth2Client } = require('google-auth-library');
 const supabase = require('../config/supabase');
 const { AppError, ERROR_CODES } = require('../utils/error');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/email');
+const { getUserStorageUsed, STORAGE_LIMIT_BYTES } = require('../utils/storage');
 const {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -447,46 +448,8 @@ exports.getMe = async (req, res, next) => {
   try {
     // User is already attached to req by auth.middleware
     // Calculate storage used
-    const { data: files, error: filesError } = await supabase
-      .from('files')
-      .select('id, size_bytes')
-      .eq('owner_id', req.user.id);
-
-    let storageUsed = 0;
-    if (filesError) {
-      console.error('Supabase error fetching files for storage:', filesError);
-    }
-    
-    if (!filesError && files && files.length > 0) {
-      const fileIds = files.map(f => f.id);
-      const { data: versions, error: versionsError } = await supabase
-        .from('file_versions')
-        .select('file_id, size_bytes')
-        .in('file_id', fileIds);
-
-      if (versionsError) {
-        console.error('Supabase error fetching file_versions for storage:', versionsError);
-      }
-
-      const versionsByFile = {};
-      if (!versionsError && versions) {
-        for (const v of versions) {
-          if (!versionsByFile[v.file_id]) versionsByFile[v.file_id] = [];
-          versionsByFile[v.file_id].push(v);
-        }
-      }
-
-      storageUsed = files.reduce((acc, file) => {
-        const fileVersions = versionsByFile[file.id];
-        if (fileVersions && fileVersions.length > 0) {
-          return acc + fileVersions.reduce((vAcc, v) => vAcc + (Number(v.size_bytes) || 0), 0);
-        }
-        return acc + (Number(file.size_bytes) || 0);
-      }, 0);
-    }
-
-    // Default storage limit: 50 MB
-    const storageLimit = 50 * 1024 * 1024;
+    const storageUsed = await getUserStorageUsed(req.user.id);
+    const storageLimit = STORAGE_LIMIT_BYTES;
 
     // Check passkey status
     const { count: passkeyCount } = await supabase
